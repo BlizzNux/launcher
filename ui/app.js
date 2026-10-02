@@ -168,8 +168,17 @@ function showLog(on) {
   logTimer = setInterval(tick, 2000);
 }
 
+// The Addons button only exists when World of Warcraft is actually installed in the prefix.
+async function refreshAddonsButton() {
+  try {
+    const installs = await invoke("wow_installs");
+    $("#open-addons").classList.toggle("hidden", installs.length === 0);
+  } catch { $("#open-addons").classList.add("hidden"); }
+}
+
 async function refreshState(openSetupIfMissing = false) {
   try { state = await invoke("install_state"); } catch (e) { console.error(e); return state; }
+  refreshAddonsButton();
   $("#launch").textContent = state.installed ? "Launch Battle.net" : "Set up Battle.net";
   $("#open-games").disabled = !state.installed;
   $("#open-games").title = state.installed ? "" : "Install Battle.net first";
@@ -299,6 +308,7 @@ async function init() {
   loadConfig();
   refreshState(true);
   checkUpdate(version);
+  setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
 }
 
 init();

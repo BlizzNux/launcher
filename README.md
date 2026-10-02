@@ -110,6 +110,14 @@ blizznux-run dpi 144   # 150 %
 | `S2` | StarCraft II |
 | `W3` | Warcraft III: Reforged |
 
+## World of Warcraft addons
+
+When World of Warcraft is installed in the prefix, an **Addons** button appears in the bar.
+It opens the AddOns folder, installs addons from a ZIP or a link (GitHub repositories and
+direct downloads), and offers a one-click install of [WowUp](https://wowup.io), the
+CurseForge-enabled addon manager, with your WoW installs already registered in it. Nothing
+addon-related is shown or installed unless WoW is present.
+
 ## What works
 
 See the game compatibility list on the [BlizzNux wiki](https://blizznux.com/wiki).
