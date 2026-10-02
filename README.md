@@ -50,18 +50,30 @@ are best effort; please report what you find. Guides and the compatibility list 
 
 ## Install
 
+Download the desktop app from the [releases page](https://github.com/BlizzNux/launcher/releases):
+
+| File | For |
+|------|-----|
+| `BlizzNux_x.y.z_amd64.AppImage` | Any distribution. `chmod +x` it and run it. |
+| `BlizzNux_x.y.z_amd64.deb` | Debian, Ubuntu, Mint and derivatives |
+| `BlizzNux-x.y.z-1.x86_64.rpm` | Fedora, openSUSE and derivatives |
+
+You still need `umu-launcher` from your distribution (the deb and rpm declare it as a
+dependency). The first run checks for it and for the GPU drivers Proton needs, and offers to
+install what's missing.
+
+### From source
+
 ```sh
 git clone https://github.com/BlizzNux/launcher.git
 cd launcher
-./install.sh
+npm install && npm run build      # desktop app: AppImage, deb, rpm under src-tauri/target/release/bundle/
+./install.sh                      # or: user-level install of the app (if built) or the script alone
 ```
 
-This puts `blizznux-run` in `~/.local/bin` and adds a **BlizzNux** entry to your application
-menu, so you can start it like any other app and pin it to the taskbar or dock. Remove it
-with `./install.sh --uninstall`. Releases are listed on the
-[releases page](https://github.com/BlizzNux/launcher/releases).
-
-When started from the menu there is no terminal; output goes to `~/.cache/blizznux/blizznux.log`
+`install.sh` puts the app (or just `blizznux-run`) in `~/.local/bin` and adds a **BlizzNux**
+entry to your application menu, so it can be pinned to the taskbar or dock. Remove it with
+`./install.sh --uninstall`. Launches made from the menu log to `~/.cache/blizznux/blizznux.log`,
 and errors show as a desktop notification.
 
 ## Use
