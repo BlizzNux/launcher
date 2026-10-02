@@ -60,8 +60,7 @@ fn run_capture(cmd: &str, args: &[&str], timeout: Duration) -> Option<String> {
 }
 
 fn os_release(key: &str) -> String {
-    fs::read_to_string("/etc/os-release")
-        .unwrap_or_default()
+    crate::host_os_release()
         .lines()
         .find(|l| l.starts_with(&format!("{key}=")))
         .map(|l| l[key.len() + 1..].trim_matches('"').to_string())
@@ -98,7 +97,10 @@ fn gpus() -> Vec<Gpu> {
         .filter(|l| l.contains("VGA compatible controller") || l.contains("3D controller") || l.contains("Display controller"))
         .map(|l| l.splitn(2, ": ").nth(1).unwrap_or(l).to_string())
         .collect();
-    let nvidia_driver = fs::read_to_string("/sys/module/nvidia/version").map(|s| s.trim().to_string()).unwrap_or_default();
+    let nvidia_driver = fs::read_to_string("/sys/module/nvidia/version")
+        .map(|s| s.trim().to_string())
+        .or_else(|_| fs::read_to_string("/proc/driver/nvidia/version").map(|t| t.split_whitespace().find(|w| w.chars().next().map_or(false, |c| c.is_ascii_digit()) && w.contains('.')).unwrap_or("").to_string()))
+        .unwrap_or_default();
     let mesa = run_capture("vulkaninfo", &["--summary"], Duration::from_secs(5))
         .and_then(|t| t.lines().find(|l| l.contains("driverInfo") && l.contains("Mesa")).map(|l| l.split('=').nth(1).unwrap_or("").trim().to_string()))
         .unwrap_or_else(|| "Mesa".into());

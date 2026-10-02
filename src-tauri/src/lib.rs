@@ -297,8 +297,13 @@ fn gpu_vendors() -> Vec<&'static str> {
     v
 }
 
+pub(crate) fn host_os_release() -> String {
+    // Inside Flatpak /etc/os-release describes the runtime; the host's copy is at /run/host.
+    fs::read_to_string("/run/host/os-release").or_else(|_| fs::read_to_string("/etc/os-release")).unwrap_or_default()
+}
+
 fn distro_family() -> &'static str {
-    let text = fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let text = host_os_release();
     let line = |k: &str| {
         text.lines()
             .find(|l| l.starts_with(k))
@@ -381,8 +386,13 @@ fn readiness() -> Vec<Check> {
         blocking: true,
     });
 
-    // 32-bit Vulkan: a Mesa i686 manifest, or a 32-bit NVIDIA GLX library.
-    let mesa32 = icds.iter().any(|n| n.contains("i686") || n.contains("i386"));
+    // 32-bit Vulkan: a Mesa i686 manifest, a 32-bit NVIDIA GLX library, or (Flatpak) any
+    // manifest inside the 32-bit GL extension mount.
+    let in_flatpak = std::env::var_os("FLATPAK_ID").is_some();
+    let ext32 = ["/app/lib/i386-linux-gnu/GL/vulkan/icd.d", "/usr/lib/i386-linux-gnu/GL/vulkan/icd.d", "/usr/lib/i386-linux-gnu/GL/default/share/vulkan/icd.d"]
+        .iter()
+        .any(|d| fs::read_dir(d).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".json"))).unwrap_or(false));
+    let mesa32 = icds.iter().any(|n| n.contains("i686") || n.contains("i386")) || (in_flatpak && ext32);
     let nvidia32 = [
         "/usr/lib32/libGLX_nvidia.so.0",
         "/usr/lib/i386-linux-gnu/libGLX_nvidia.so.0",
@@ -392,7 +402,7 @@ fn readiness() -> Vec<Check> {
     .any(|p| is_elf32(std::path::Path::new(p)));
     let needs_nvidia32 = vendors.contains(&"nvidia");
     let needs_mesa32 = vendors.iter().any(|v| *v == "amd" || *v == "intel");
-    let vk32 = (!needs_nvidia32 || nvidia32) && (!needs_mesa32 || mesa32) && (nvidia32 || mesa32);
+    let vk32 = if in_flatpak { ext32 } else { (!needs_nvidia32 || nvidia32) && (!needs_mesa32 || mesa32) && (nvidia32 || mesa32) };
     let hint = vendors
         .iter()
         .filter(|v| match **v { "nvidia" => !nvidia32, _ => !mesa32 })
@@ -407,7 +417,7 @@ fn readiness() -> Vec<Check> {
         } else {
             format!("missing for {} — Battle.net and older games need it", if vendors.is_empty() { "your GPU".into() } else { vendors.join(" + ") })
         },
-        hint: if hint.is_empty() { pkg_hint("", family) } else { hint },
+        hint: if in_flatpak { "flatpak install org.freedesktop.Platform.GL32.default and the GL32 extension matching your driver".into() } else if hint.is_empty() { pkg_hint("", family) } else { hint },
         blocking: false,
     });
     // Debug aid: BLIZZNUX_FAKE_MISSING="umu-launcher,curl" makes those checks fail on purpose.
@@ -438,6 +448,9 @@ fn multilib_enabled() -> bool {
 
 /// The exact root commands that would fix a failed readiness check, or None if we don't know how.
 fn fix_steps(check: &str) -> Option<Vec<String>> {
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        return None; // no pkexec inside the sandbox; the hint text explains what to install
+    }
     let family = distro_family();
     let vendors = gpu_vendors();
     let mut steps: Vec<String> = Vec::new();
