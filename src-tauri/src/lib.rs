@@ -626,6 +626,16 @@ pub fn run() {
             // blizznux.com is shown in a frame inside our own page. WebKitGTK refuses
             // third-party cookies by default, which would log the user out of the forum on
             // every visit, so allow cookies for the embedded site.
+            // Test aid: BLIZZNUX_AUTO_UPDATE=1 installs an available update without clicking.
+            if std::env::var_os("BLIZZNUX_AUTO_UPDATE").is_some() {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match updates::update_install(h).await {
+                        Ok(()) => {}
+                        Err(e) => eprintln!("[auto-update] {e}"),
+                    }
+                });
+            }
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_title(&format!("BlizzNux Launcher v{}", env!("CARGO_PKG_VERSION")));
                 let _ = main.with_webview(|platform| {

@@ -23,8 +23,9 @@ PY
 # 2. signed bundles (AppImage gets a .sig; deb/rpm are built too)
 TAURI_SIGNING_PRIVATE_KEY="$key" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npx tauri build
 b=src-tauri/target/release/bundle
-app=$(ls "$b"/appimage/*.AppImage | head -1); sig="$app.sig"
-deb=$(ls "$b"/deb/*.deb | head -1); rpm=$(ls "$b"/rpm/*.rpm | head -1)
+app=$(ls "$b"/appimage/*_"$ver"_*.AppImage | head -1); sig="$app.sig"
+deb=$(ls "$b"/deb/*_"$ver"_*.deb | head -1); rpm=$(ls "$b"/rpm/*-"$ver"-*.rpm | head -1)
+[[ -f $app && -f $deb && -f $rpm ]] || { echo "bundles for $ver not found under $b" >&2; exit 1; }
 [[ -f $sig ]] || { echo "no signature produced for $app" >&2; exit 1; }
 
 # 3. updater manifest the app checks: releases/latest/download/latest.json
