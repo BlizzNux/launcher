@@ -24,6 +24,7 @@ fn self_updatable() -> bool {
 async fn checker(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
     let mut b = app.updater_builder();
     if let Ok(u) = std::env::var("BLIZZNUX_UPDATE_URL") {
+        // Test override only: a local http manifest is allowed here, never in the shipped endpoint.
         let url: url::Url = u.parse().map_err(|e: url::ParseError| e.to_string())?;
         b = b.endpoints(vec![url]).map_err(|e| e.to_string())?;
     }
