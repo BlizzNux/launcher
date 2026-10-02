@@ -8,7 +8,17 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [],
+    "windows": [
+      {
+        "label": "main",
+        "title": "BlizzNux",
+        "url": "index.html",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
     "security": {
       "csp": null
     }

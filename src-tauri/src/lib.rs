@@ -3,73 +3,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
-use tauri::webview::WebviewBuilder;
-use tauri::window::WindowBuilder;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent};
+use tauri::{AppHandle, Manager};
 
-const FORUM: &str = "https://blizznux.com/";
 const FORUM_HOST: &str = "blizznux.com";
-const UI: &str = "ui";
-const COMMUNITY: &str = "community";
-/// Height of the control bar at the bottom of the window, in logical pixels.
-const BAR: f64 = 64.0;
-
-/// Whether the control webview is the bottom bar or covers the window (settings, disclaimer).
-#[derive(Clone, Copy, PartialEq)]
-enum UiMode {
-    Bar,
-    Full,
-}
-
-struct UiState(Mutex<UiMode>);
-
-fn layout(app: &AppHandle, window: &tauri::Window) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let Ok(size) = window.inner_size() else { return };
-    let size = size.to_logical::<f64>(scale);
-    let mode = app.state::<UiState>().0.lock().map(|m| *m).unwrap_or(UiMode::Bar);
-    let bar_h = BAR.min(size.height);
-    if let Some(c) = app.get_webview(COMMUNITY) {
-        let _ = c.set_position(LogicalPosition::new(0.0, 0.0));
-        let _ = c.set_size(LogicalSize::new(size.width, (size.height - bar_h).max(1.0)));
-    }
-    if let Some(ui) = app.get_webview(UI) {
-        match mode {
-            UiMode::Bar => {
-                let _ = ui.set_position(LogicalPosition::new(0.0, size.height - bar_h));
-                let _ = ui.set_size(LogicalSize::new(size.width, bar_h));
-            }
-            UiMode::Full => {
-                let _ = ui.set_position(LogicalPosition::new(0.0, 0.0));
-                let _ = ui.set_size(LogicalSize::new(size.width, size.height));
-            }
-        }
-    }
-}
-
-#[tauri::command]
-fn set_ui_mode(app: AppHandle, mode: String) -> Result<(), String> {
-    let m = match mode.as_str() {
-        "bar" => UiMode::Bar,
-        "full" => UiMode::Full,
-        _ => return Err("mode must be bar or full".into()),
-    };
-    *app.state::<UiState>().0.lock().map_err(|e| e.to_string())? = m;
-    let window = app.get_window("main").ok_or("main window missing")?;
-    layout(&app, &window);
-    Ok(())
-}
-
-#[tauri::command]
-fn community_navigate(app: AppHandle, url: String) -> Result<(), String> {
-    let u: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
-    if u.host_str() != Some(FORUM_HOST) {
-        return Err("only blizznux.com can be shown in the community view".into());
-    }
-    let c = app.get_webview(COMMUNITY).ok_or("community webview missing")?;
-    c.navigate(u).map_err(|e| e.to_string())
-}
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
@@ -264,55 +200,26 @@ pub fn run() {
     // WebKitGTK renders with hardware acceleration by default. If the forum view shows
     // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
-        .manage(UiState(Mutex::new(UiMode::Bar)))
         .setup(|app| {
-            let window = WindowBuilder::new(app, "main")
-                .title("BlizzNux")
-                .inner_size(1180.0, 820.0)
-                .min_inner_size(900.0, 600.0)
-                .build()?;
-            let scale = window.scale_factor()?;
-            let size = window.inner_size()?.to_logical::<f64>(scale);
-            window.add_child(
-                WebviewBuilder::new(COMMUNITY, WebviewUrl::External(FORUM.parse().unwrap())),
-                LogicalPosition::new(0.0, 0.0),
-                LogicalSize::new(size.width, (size.height - BAR).max(1.0)),
-            )?;
-            window.add_child(
-                WebviewBuilder::new(UI, WebviewUrl::App("index.html".into())),
-                LogicalPosition::new(0.0, size.height - BAR),
-                LogicalSize::new(size.width, BAR),
-            )?;
-            let handle = app.handle().clone();
-            let w = window.clone();
-            window.on_window_event(move |e| {
-                if matches!(e, WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }) {
-                    layout(&handle, &w);
-                }
-            });
-            // Resize events can arrive before the handler exists (e.g. the compositor maximizes
-            // the window as it appears), so also reconcile whenever the size actually changes.
-            let handle = app.handle().clone();
-            let w = window.clone();
-            std::thread::spawn(move || {
-                let mut last = (0u32, 0u32, 0u64);
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    let Ok(size) = w.inner_size() else { break };
-                    let scale = (w.scale_factor().unwrap_or(1.0) * 1000.0) as u64;
-                    let now = (size.width, size.height, scale);
-                    if now != last {
-                        last = now;
-                        layout(&handle, &w);
+            // blizznux.com is shown in a frame inside our own page. WebKitGTK refuses
+            // third-party cookies by default, which would log the user out of the forum on
+            // every visit, so allow cookies for the embedded site.
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.with_webview(|platform| {
+                    #[cfg(target_os = "linux")]
+                    {
+                        use webkit2gtk::{CookieManagerExt, WebContextExt, WebViewExt};
+                        if let Some(ctx) = platform.inner().context() {
+                            if let Some(cm) = ctx.cookie_manager() {
+                                cm.set_accept_policy(webkit2gtk::CookieAcceptPolicy::Always);
+                            }
+                        }
                     }
-                }
-            });
-            layout(app.handle(), &window);
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            set_ui_mode,
-            community_navigate,
             fetch_json,
             launch,
             doctor,

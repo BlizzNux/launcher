@@ -30,14 +30,10 @@ async function showPanel(name) {
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
   $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer" }[name] || "";
   $("#panel").classList.remove("hidden");
-  $("#bar").classList.add("hidden");
-  try { await invoke("set_ui_mode", { mode: "full" }); } catch (e) { console.error(e); }
 }
 
 async function hidePanel() {
-  try { await invoke("set_ui_mode", { mode: "bar" }); } catch (e) { console.error(e); }
   $("#panel").classList.add("hidden");
-  $("#bar").classList.remove("hidden");
 }
 
 function newerVersion(latest, current) {
@@ -86,7 +82,8 @@ async function init() {
   });
   $("#launch").onclick = () => launch();
   $("#open-games").onclick = () => showPanel("games");
-  $("#home").onclick = () => invoke("community_navigate", { url: FORUM }).catch((e) => status(String(e), true));
+  $("#home").onclick = () => { $("#site").src = FORUM; };
+  $("#panel").addEventListener("click", (e) => { if (e.target === $("#panel")) hidePanel(); });
   $("#open-settings").onclick = () => showPanel("settings");
   $("#open-disclaimer").onclick = () => showPanel("disclaimer");
   $("#close").onclick = hidePanel;
