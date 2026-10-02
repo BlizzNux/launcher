@@ -286,10 +286,28 @@ pub fn run() {
             let handle = app.handle().clone();
             let w = window.clone();
             window.on_window_event(move |e| {
-                if let WindowEvent::Resized(_) = e {
+                if matches!(e, WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }) {
                     layout(&handle, &w);
                 }
             });
+            // Resize events can arrive before the handler exists (e.g. the compositor maximizes
+            // the window as it appears), so also reconcile whenever the size actually changes.
+            let handle = app.handle().clone();
+            let w = window.clone();
+            std::thread::spawn(move || {
+                let mut last = (0u32, 0u32, 0u64);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let Ok(size) = w.inner_size() else { break };
+                    let scale = (w.scale_factor().unwrap_or(1.0) * 1000.0) as u64;
+                    let now = (size.width, size.height, scale);
+                    if now != last {
+                        last = now;
+                        layout(&handle, &w);
+                    }
+                }
+            });
+            layout(app.handle(), &window);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
