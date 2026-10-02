@@ -136,6 +136,14 @@ See the game compatibility list on the [BlizzNux wiki](https://blizznux.com/wiki
 In short: the Blizzard-developed titles run; Call of Duty does not, because its Ricochet
 anti-cheat does not allow Linux.
 
+## Releasing
+
+`scripts/release.sh <version> [notes.md]` bumps the version, builds signed bundles, writes the
+updater manifest and publishes the GitHub release. It needs the updater signing key (kept
+outside the repository; the matching public key is in `tauri.conf.json`). AppImage users get
+in-app updates from that manifest; deb, rpm and Flatpak users update through their package
+manager. The launcher also tells users when a newer Battle.net client is out.
+
 ## Contributing
 
 Issues and pull requests are welcome. Changes to `main` require review by the BlizzNux
