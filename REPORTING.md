@@ -74,34 +74,39 @@ landed in. `429` when rate-limited (the launcher shows "try again later"), `400`
 
 ## Account link (pairing)
 
-Logging in links the launcher automatically. No code is typed, no credential crosses between
-pages, and **no URL can approve a pairing**: the approval is triggered by the launcher from
-inside a login window it controls, so a crafted link sent to a logged-in user does nothing.
+Logging in links the launcher automatically, inside the launcher's embedded view, with
+Flarum's own login dialog. No code is typed, no credential crosses between pages, and no
+URL can approve a pairing: the page learns which pairing to approve only from a cookie that
+the launcher plants in its own cookie store.
 
 1. **Start.** The launcher calls `POST https://blizznux.com/api/launcher/link/start` with
    `{"install_id": "<uuid>", "launcher_version": "0.2.1", "distro": "CachyOS Linux"}`.
    Response `201 {"pair_id": "<public id>", "pair_secret": "<≥32 chars>", "expires_in": 600}`.
-   CSRF-exempt (desktop app). Rate-limit 10 per minute per IP. The site records IP and time.
-2. **Login.** The launcher opens `https://blizznux.com/launcher/link` (no parameters) as the
-   top-level document of its own login window. For a logged-out visitor the page opens
-   Flarum's standard LogInModal at once ("Remember me" pre-ticked; sign-up and password reset
-   as on the site); a "Log in to link the launcher" button reopens the modal if dismissed. The
-   page needs no pairing logic at all.
-3. **Approve.** Every two seconds the launcher runs a small script in that window; once
-   Flarum reports a logged-in user, the script calls `POST /api/launcher/link/approve` with
-   `{"pair_id": "<id>"}` using the page's own session and `app.session.csrfToken` in the
-   `X-CSRF-Token` header. The endpoint is browser-only and CSRF-protected and must stay that
-   way; the launcher process never calls it directly. Because only the launcher can run that
-   script, approval is **automatic**: no confirmation page is needed. Single use.
-   Responses: `200`/`201` approved; `404` unknown pair; `410` expired; `409` already used.
-4. **Collect.** From the moment it opened the window, the launcher polls
-   `POST /api/launcher/link/poll` with `{"pair_id": "<id>", "pair_secret": "<secret>"}`:
-   `202 {"status": "pending"}`; `201 {"token": "<≥32 chars [A-Za-z0-9._-]>", "username":
-   "<display name>"}` once approved (pairing consumed); `410 {"error": "expired"}` after
-   10 minutes; `404` unknown pair or wrong secret. CSRF-exempt; allow ~60 per minute per IP.
-   On success the launcher closes the login window; the login itself persists in the
-   launcher's shared cookie store, so the embedded forum is logged in too.
-5. The site stores the token with the user id, `install_id` and creation date, revocable from
+   CSRF-exempt (desktop app). Rate-limit 10 per minute per IP.
+2. **Cookie.** The launcher writes `bz_pair=<pair_id>; Domain=blizznux.com; Path=/; Secure;
+   HttpOnly; SameSite=None; Max-Age=600` into its own WebKit cookie store, then loads
+   `https://blizznux.com/launcher/link` (no parameters) in its embedded view. Only the
+   launcher can plant that cookie; page script cannot read it; a crafted link, another site or
+   a phishing page cannot set cookies for blizznux.com in anyone's browser.
+3. **Login.** For a logged-out visitor the page opens Flarum's standard LogInModal at once,
+   "Remember me" pre-ticked (sign-up and password reset as on the site); a "Log in to link the
+   launcher" button reopens the modal if dismissed.
+4. **Approve.** Once `app.session.user` exists (after the forum app has booted, so
+   `app.session.csrfToken` is defined), the page calls `POST /api/launcher/link/approve` with
+   an empty JSON body and the `X-CSRF-Token` header. The endpoint is browser-only and
+   CSRF-protected and must stay that way; it reads `pair_id` from the `bz_pair` cookie and
+   ignores any body. It approves **automatically** when the pairing is unexpired and unused,
+   binding it to the logged-in user; single use. Responses: `2xx` approved; `204` no cookie
+   (ordinary visitors see nothing); `404` unknown pair; `410` expired; `409` already used.
+   The page shows "Linked to the BlizzNux launcher as <username>" on success.
+5. **Collect.** From the moment it opened the page, the launcher polls
+   `POST /api/launcher/link/poll` with `{"pair_id": "<id>", "pair_secret": "<secret>"}` every
+   two seconds: `202 {"status": "pending"}`; `201 {"token": "<≥32 chars [A-Za-z0-9._-]>",
+   "username": "<display name>"}` once approved (pairing consumed); `410 {"error":
+   "expired"}` after 10 minutes; `404` for an unknown pair or wrong secret (one opaque answer
+   for both). CSRF-exempt; allow ~60 per minute per IP. On success the launcher deletes the
+   cookie and returns the embedded view to the forum, which is now logged in.
+6. The site stores the token with the user id, `install_id` and creation date, revocable from
    the user's profile. The launcher sends it as `user_token` on every report; an unknown or
    revoked token is treated as anonymous (the report is still accepted). "Log out of the
    launcher" only deletes the token locally.
@@ -109,9 +114,8 @@ inside a login window it controls, so a crafted link sent to a logged-in user do
 After linking, the launcher shows the sharing choices once (both off by default): share
 verification reports (launches and game sessions) and send bug reports automatically.
 
-Test overrides: `BLIZZNUX_LINK_URL` (API base) and `BLIZZNUX_LINK_PAGE` (page URL).
-The one-time-code exchange (`POST /api/launcher/link` with `code`) is no longer used by the
-launcher and can be removed once pairing is live.
+Test overrides: `BLIZZNUX_LINK_URL` (API base) and `BLIZZNUX_LINK_PAGE` (page URL; its host
+is also used for the cookie). The one-time-code exchange from an earlier revision is unused.
 
 ## What the site does with each type
 
