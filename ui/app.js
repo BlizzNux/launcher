@@ -83,7 +83,7 @@ async function init() {
   $("#home").onclick = () => invoke("community_navigate", { url: FORUM }).catch((e) => status(String(e), true));
   $("#open-settings").onclick = () => showPanel("settings");
   $("#open-disclaimer").onclick = () => showPanel("disclaimer");
-  $("#back").onclick = hidePanel;
+  $("#close").onclick = hidePanel;
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#panel").classList.contains("hidden")) hidePanel(); });
   document.querySelectorAll("a[data-url]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); invoke("open_external", { url: a.dataset.url }); }; });
   $("#cfg-save").onclick = saveConfig;

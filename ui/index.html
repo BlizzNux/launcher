@@ -24,10 +24,11 @@
 
   <!-- Full-window panels: settings and disclaimer -->
   <div id="panel" class="hidden">
+   <div class="box">
     <header class="panel-head">
-      <button id="back" class="flat">← Back to BlizzNux.com</button>
       <span id="panel-title"></span>
       <span class="muted">v<span id="version">?</span></span>
+      <button id="close" class="close" title="Close (Esc)" aria-label="Close">✕</button>
     </header>
 
     <section id="panel-settings" class="panel-page">
@@ -82,6 +83,7 @@
         Source: <a href="#" data-url="https://github.com/BlizzNux/launcher">github.com/BlizzNux/launcher</a>
         · Wiki: <a href="#" data-url="https://blizznux.com/wiki">blizznux.com/wiki</a></p>
     </section>
+   </div>
   </div>
 
   <script src="app.js"></script>
