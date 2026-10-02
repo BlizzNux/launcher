@@ -85,6 +85,7 @@ async function startLogin() {
     pollTimer = setInterval(pollLogin, 2000);
   } catch (e) {
     console.error("pairing not started:", e);   // site unreachable: plain forum, try again next launch
+    $("#site").src = FORUM;
   }
 }
 
@@ -452,7 +453,9 @@ async function init() {
   loadConfig();
   const st = await refreshState(true);
   const acct = await refreshAccount();
-  if (st.installed && !acct.linked) startLogin();
+  // One navigation only: two loads racing before the session cookie exists leave the page with a
+  // CSRF token that does not match the stored session, and the first login attempt fails.
+  if (st.installed && !acct.linked) startLogin(); else $("#site").src = FORUM;
   checkUpdate(version);
   checkBattlenet();
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch

@@ -654,6 +654,24 @@ pub fn run() {
                                 cm.set_accept_policy(webkit2gtk::CookieAcceptPolicy::Always);
                             }
                         }
+                        // BLIZZNUX_NET_DEBUG=1: print the site's console and every request status to stderr.
+                        if std::env::var_os("BLIZZNUX_NET_DEBUG").is_some() {
+                            use webkit2gtk::{SettingsExt, UserContentManagerExt};
+                            let wv = platform.inner();
+                            if let Some(settings) = WebViewExt::settings(&wv) {
+                                settings.set_enable_write_console_messages_to_stdout(true);
+                            }
+                            if let Some(ucm) = wv.user_content_manager() {
+                                let script = webkit2gtk::UserScript::new(
+                                    NET_DEBUG_JS,
+                                    webkit2gtk::UserContentInjectedFrames::AllFrames,
+                                    webkit2gtk::UserScriptInjectionTime::Start,
+                                    &[],
+                                    &[],
+                                );
+                                ucm.add_script(&script);
+                            }
+                        }
                     }
                 });
             }
@@ -700,3 +718,20 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running BlizzNux");
 }
+
+/// Request/response tracer injected into every frame when BLIZZNUX_NET_DEBUG is set.
+/// Logs method, URL and status only; response bodies are logged for failures alone.
+#[cfg(target_os = "linux")]
+const NET_DEBUG_JS: &str = r#"(function(){
+  if (!/blizznux\.com$/.test(location.hostname)) return;
+  var log = function(kind, method, url, status, body){ try { console.log('NETDBG ' + kind + ' ' + method + ' ' + url + ' -> ' + status + (body ? ' :: ' + body : '')); } catch(e){} };
+  var skip = function(u){ return /\.(js|css|png|svg|woff2?)(\?|$)/.test(u) || /cdn-cgi\/rum/.test(u); };
+  var open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(m, u){ this.__m = m; this.__u = String(u); return open.apply(this, arguments); };
+  var send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function(){ var x = this; x.addEventListener('loadend', function(){ if (skip(x.__u)) return; var ok = x.status >= 200 && x.status < 300; var b = ''; try { b = ok ? '' : String(x.responseText).slice(0, 300); } catch(e){} log('xhr', x.__m, x.__u, x.status, b); }); return send.apply(this, arguments); };
+  var f = window.fetch;
+  window.fetch = function(input, init){ var u = typeof input === 'string' ? input : (input && input.url) || ''; var m = (init && init.method) || (input && input.method) || 'GET'; return f.apply(this, arguments).then(function(r){ if (!skip(u)) { if (r.ok) log('fetch', m, u, r.status, ''); else r.clone().text().then(function(t){ log('fetch', m, u, r.status, t.slice(0,300)); }, function(){ log('fetch', m, u, r.status, ''); }); } return r; }, function(e){ log('fetch', m, u, 'ERR', String(e)); throw e; }); };
+  window.addEventListener('error', function(e){ log('jserror', '', location.pathname, '', String(e.message)); });
+  window.addEventListener('unhandledrejection', function(e){ log('rejection', '', location.pathname, '', String(e.reason && (e.reason.message || e.reason)).slice(0, 300)); });
+})();"#;
