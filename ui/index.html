@@ -25,6 +25,8 @@
     <div class="brand" id="home" title="Back to the BlizzNux.com front page"><img src="logo.png" alt=""><span>BlizzNux</span></div>
     <button id="launch" class="launch">Launch Battle.net</button>
     <span id="status" class="status"></span>
+    <span id="bar-notice" class="notice hidden"><span id="bar-notice-text"></span>
+      <button id="notice-yes" class="flat small">Yes</button><button id="notice-no" class="flat small">No</button></span>
     <div class="spacer"></div>
     <button id="update" class="update hidden">Update available</button>
     <button id="open-addons" class="flat hidden">Addons</button>
@@ -90,27 +92,6 @@
         <label class="radio"><input type="checkbox" id="cfg-bug-auto"> Send bug reports automatically when a launch fails</label>
         <label class="radio"><input type="checkbox" id="cfg-reports-auto"> Send the "how did it run?" answer without a preview</label>
         <p class="muted">Home paths are never sent. Failures are recorded under your account either way once sharing is on.</p>
-      </div>
-    </section>
-
-    <section id="panel-login" class="panel-page">
-      <div id="login-wait">
-        <h1>Log in with BlizzNux.com</h1>
-        <p>Log in above with your BlizzNux account, or create one. The launcher links itself the moment you're in.
-          Without an account the launcher still works; you just can't share reports.</p>
-        <div class="row">
-          <span id="login-status" class="muted">Waiting for you to log in…</span>
-          <span class="spacer"></span>
-          <button id="login-retry" class="flat hidden">Try again</button>
-          <button id="login-later" class="flat">Not now</button>
-        </div>
-      </div>
-      <div id="login-done" class="hidden">
-        <h1>Linked as <span id="login-name"></span></h1>
-        <p>Choose what to share with the community. Both are off until you turn them on, and you can change them in Settings.</p>
-        <label class="radio"><input type="checkbox" id="opt-share"> Share verification reports: each Battle.net launch and game session, with your setup (distro, GPU and driver, Proton, game and Battle.net builds)</label>
-        <label class="radio"><input type="checkbox" id="opt-bug"> Send bug reports automatically when a launch fails (the launcher log is attached; home paths are never sent)</label>
-        <div class="row" style="margin-top:12px"><button id="login-finish" class="launch">Done</button></div>
       </div>
     </section>
 

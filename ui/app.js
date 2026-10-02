@@ -75,22 +75,16 @@ let pollTimer;
 
 function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
 
-// Log in with Flarum's own form inside the launcher; the site approves the pairing on login
-// and the launcher collects the token by polling. Nothing is typed or copied.
+// Not logged in: the embedded view goes to the site's login page, nothing else is shown.
+// The launcher pairs itself in the background and collects the token once the login lands.
 async function startLogin() {
   stopPolling();
-  $("#login-wait").classList.remove("hidden"); $("#login-done").classList.add("hidden");
-  $("#login-retry").classList.add("hidden");
-  $("#login-status").textContent = "Contacting blizznux.com…";
-  showPanel("login");
   try {
     const s = await invoke("link_start");
     $("#site").src = s.url;
-    $("#login-status").textContent = "Waiting for you to log in above…";
     pollTimer = setInterval(pollLogin, 2000);
   } catch (e) {
-    $("#login-status").textContent = `Could not start: ${e}`;
-    $("#login-retry").classList.remove("hidden");
+    console.error("pairing not started:", e);   // site unreachable: plain forum, try again next launch
   }
 }
 
@@ -100,29 +94,29 @@ async function pollLogin() {
     if (r.status === "linked") {
       stopPolling();
       await refreshAccount();
-      $("#login-name").textContent = r.username;
-      $("#opt-share").checked = account.sharing; $("#opt-bug").checked = account.bug_auto;
-      $("#login-wait").classList.add("hidden"); $("#login-done").classList.remove("hidden");
-      $("#site").src = FORUM; // reload the forum: the login is shared with the embedded view
+      $("#site").src = FORUM;
+      askSharing(r.username);
     } else if (r.status === "expired" || r.status === "none") {
       stopPolling();
-      $("#login-status").textContent = "The login attempt expired.";
-      $("#login-retry").classList.remove("hidden");
+      if (!account.linked) startLogin();   // keep the login page current while the user is away
     }
   } catch (e) {
     stopPolling();
-    $("#login-status").textContent = String(e);
-    $("#login-retry").classList.remove("hidden");
+    console.error(e);
   }
 }
 
-async function finishLogin() {
-  try {
-    await invoke("write_config", { values: { REPORTS_SHARE: $("#opt-share").checked ? "1" : "0", BUG_AUTO: $("#opt-bug").checked ? "1" : "0" } });
-    await refreshAccount();
-  } catch (e) { status(String(e), true); }
-  hidePanel();
-  status(`Logged in as ${account.username}.${account.sharing ? " Sharing verification reports." : ""}`);
+// One inline question in the bar after linking; no dialog. Settings holds the switches after that.
+function askSharing(username) {
+  $("#bar-notice-text").textContent = `Logged in as ${username}. Share compatibility reports with the community?`;
+  $("#bar-notice").classList.remove("hidden");
+  const done = async (yes) => {
+    $("#bar-notice").classList.add("hidden");
+    try { await invoke("write_config", { values: { REPORTS_SHARE: yes ? "1" : "0" } }); await refreshAccount(); } catch (e) { status(String(e), true); }
+    status(yes ? "Sharing verification reports. Bug reports can be automated in Settings." : "Not sharing. You can change this in Settings.");
+  };
+  $("#notice-yes").onclick = () => done(true);
+  $("#notice-no").onclick = () => done(false);
 }
 
 // ---- reports to BlizzNux ----
@@ -302,9 +296,8 @@ async function launch(game) {
 }
 
 async function showPanel(name) {
-  $("#panel").classList.toggle("sheet", name === "login");
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-  $("#panel-title").textContent = { settings: "Settings", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report", login: "BlizzNux account" }[name] || "";
+  $("#panel-title").textContent = { settings: "Settings", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report" }[name] || "";
   if (name === "addons") loadAddons();
   $("#panel").classList.remove("hidden");
 }
@@ -432,10 +425,7 @@ async function init() {
   window.__TAURI__.event.listen("game-crashed", (e) => { const g = e.payload || {}; status(`${g.name} closed after ${g.seconds} s.${account.sharing ? " Recorded." : ""}`, true); });
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
-  $("#acct-link").onclick = startLogin;
-  $("#login-retry").onclick = startLogin;
-  $("#login-later").onclick = () => { stopPolling(); invoke("link_cancel").catch(() => {}); $("#site").src = FORUM; hidePanel(); };
-  $("#login-finish").onclick = finishLogin;
+  $("#acct-link").onclick = () => { hidePanel(); startLogin(); };
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };
   $("#cfg-share").addEventListener("change", saveConfig);
