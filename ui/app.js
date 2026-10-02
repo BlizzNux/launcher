@@ -71,22 +71,24 @@ async function refreshAccount() {
 }
 
 function openLinkPage() {
-  hidePanel();
+  // Keep the box open so the code field stays visible next to the site.
   $("#site").src = LINK_PAGE;
 }
 
-// blizznux.com/launcher/link hands the token to the launcher with window.parent.postMessage.
-window.addEventListener("message", async (ev) => {
-  if (ev.origin !== SITE_ORIGIN) return;
-  const m = ev.data || {};
-  if (m.type !== "blizznux-link" || !m.token) return;
+async function linkWithCode(inputSel, statusSel) {
+  const code = $(inputSel).value.trim();
+  if (!code) { $(statusSel).textContent = "Paste the code from blizznux.com first."; return; }
+  $(statusSel).textContent = "Linking…";
   try {
-    await invoke("link_account", { token: String(m.token), username: String(m.username || "") });
+    await invoke("link_account", { code });
     await refreshAccount();
+    $(statusSel).textContent = `Logged in as ${account.username}.`;
+    $(inputSel).value = "";
     status(`Logged in as ${account.username}. Turn on sharing in Settings when you're ready.`);
     $("#site").src = FORUM;
-  } catch (e) { status(String(e), true); }
-});
+    setTimeout(hidePanel, 1200);
+  } catch (e) { $(statusSel).textContent = String(e); }
+}
 
 // ---- reports to BlizzNux ----
 let report = { kind: "run", game: null, outcome: null, body: null };
@@ -265,6 +267,7 @@ async function launch(game) {
 }
 
 async function showPanel(name) {
+  $("#panel").classList.toggle("sheet", name === "login");
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
   $("#panel-title").textContent = { settings: "Settings", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report", login: "BlizzNux account" }[name] || "";
   if (name === "addons") loadAddons();
@@ -397,6 +400,9 @@ async function init() {
   $("#acct-link").onclick = openLinkPage;
   $("#login-go").onclick = openLinkPage;
   $("#login-later").onclick = hidePanel;
+  $("#login-link").onclick = () => linkWithCode("#login-code", "#login-status");
+  $("#login-code").addEventListener("keydown", (e) => { if (e.key === "Enter") linkWithCode("#login-code", "#login-status"); });
+  $("#acct-link-code").onclick = () => linkWithCode("#acct-code", "#acct-status");
   $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };
   $("#cfg-share").addEventListener("change", saveConfig);
   $("#do-install").onclick = async () => {

@@ -74,20 +74,26 @@ landed in. `429` when rate-limited (the launcher shows "try again later"), `400`
 
 ## Account link
 
-`https://blizznux.com/launcher/link` is opened by the launcher inside its embedded view (the
-user is logged in there as on the normal site, or sees the normal login / sign-up).
-When the page runs for a logged-in user it must:
+Linking never moves a credential between origins. The site shows a one-time code; the
+launcher exchanges it over HTTPS.
 
-1. Create a **launcher token** for that user (random, ≥ 32 chars, `[A-Za-z0-9._-]`), stored
-   server-side with the user id and a creation date; the user can revoke it from their profile.
-2. Hand it to the launcher with
-   `window.parent.postMessage({ type: "blizznux-link", token: "<token>", username: "<display name>" }, "*")`.
-   The launcher accepts the message only when `event.origin === "https://blizznux.com"`.
-3. Show a short "Linked to the BlizzNux launcher" confirmation.
+1. The launcher opens `https://blizznux.com/launcher/link` in its embedded view. Logged-out
+   users see the normal login / sign-up there first.
+2. For a logged-in user the page shows a **one-time code**: 8 characters, uppercase letters and
+   digits without `0 O 1 I`, valid 10 minutes, single use, bound to that user; with a
+   "Copy code" button and the sentence "Paste this code into the BlizzNux launcher".
+3. The user pastes it into the launcher, which calls
+   `POST https://blizznux.com/api/launcher/link` with
+   `{"code": "ABCD2345", "install_id": "<uuid>", "launcher_version": "0.2.1"}`.
+   Responses: `201 {"token": "<≥32 chars, [A-Za-z0-9._-]>", "username": "<display name>"}`;
+   `400 {"error": "…"}` for an unknown, expired or used code; `429` when rate-limited
+   (suggested: 10 attempts per minute per IP).
+4. The site stores the token with the user id, the `install_id` and a creation date; the user
+   can revoke it from their profile. The launcher sends it as `user_token` on every report;
+   an unknown or revoked token is treated as anonymous (the report is still accepted).
+   "Log out of the launcher" only deletes the token locally.
 
-The endpoint resolves `user_token` to the account on every report; an unknown or revoked token
-is treated as anonymous (do not reject the report). "Log out of the launcher" in Settings only
-deletes the token locally; revocation is on the site.
+The launcher reads `BLIZZNUX_LINK_URL` as a test override for the exchange endpoint.
 
 ## What the site does with each type
 

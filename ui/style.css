@@ -132,3 +132,6 @@ textarea { width: 100%; max-width: 640px; background: var(--panel); color: var(-
 textarea:focus { outline: none; border-color: var(--accent); }
 #report-preview-wrap { margin: 6px 0 14px; }
 #report-preview { margin-top: 8px; max-height: 30vh; }
+.steps { margin: 0 0 14px; padding-left: 1.3em; }
+.steps li { margin: 4px 0; }
+#panel.sheet { align-items: flex-end; padding-bottom: 76px; }

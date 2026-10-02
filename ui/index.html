@@ -83,7 +83,12 @@
         <p class="muted">The launcher works without an account. Log in with blizznux.com to share compatibility
           reports with the community: successful launches, game sessions and anything that breaks are then
           recorded under your account.</p>
-        <div class="row"><button id="acct-link">Log in or create an account</button></div>
+        <div class="row">
+          <button id="acct-link">Log in or create an account</button>
+          <input id="acct-code" placeholder="Code from blizznux.com" maxlength="12" autocomplete="off" spellcheck="false" style="width:14em">
+          <button id="acct-link-code">Link</button>
+          <span id="acct-status" class="muted"></span>
+        </div>
       </div>
       <div id="acct-linked" class="hidden">
         <p>Logged in as <strong id="acct-name"></strong>. <button id="acct-unlink" class="flat small">Log out of the launcher</button></p>
@@ -98,11 +103,17 @@
       <h1>Log in with BlizzNux.com</h1>
       <p>The launcher works without an account. With one, you can share compatibility reports with the community:
         every successful launch and game session helps others, and anything that breaks is recorded under your account.</p>
+      <ol class="steps">
+        <li>Log in or sign up on blizznux.com (opens here in the launcher).</li>
+        <li>The site shows a short code. Paste it below.</li>
+      </ol>
       <div class="row">
         <button id="login-go" class="launch">Log in or create an account</button>
+        <input id="login-code" placeholder="Code from blizznux.com" maxlength="12" autocomplete="off" spellcheck="false" style="width:14em">
+        <button id="login-link">Link</button>
         <button id="login-later" class="flat">Not now</button>
       </div>
-      <p class="muted">Logging in happens on blizznux.com itself; the launcher never sees your password.</p>
+      <p id="login-status" class="muted">The launcher never sees your password; the code is valid for ten minutes and works once.</p>
     </section>
 
     <section id="panel-report" class="panel-page">
