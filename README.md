@@ -36,12 +36,18 @@ are best effort; please report what you find. Guides and the compatibility list 
 ## Install
 
 ```sh
-mkdir -p ~/.local/bin
-curl -fL https://raw.githubusercontent.com/BlizzNux/launcher/main/bin/blizznux-run -o ~/.local/bin/blizznux-run
-chmod +x ~/.local/bin/blizznux-run
+git clone https://github.com/BlizzNux/launcher.git
+cd launcher
+./install.sh
 ```
 
-Make sure `~/.local/bin` is on your `PATH`.
+This puts `blizznux-run` in `~/.local/bin` and adds a **BlizzNux** entry to your application
+menu, so you can start it like any other app and pin it to the taskbar or dock. Remove it
+with `./install.sh --uninstall`. Releases are listed on the
+[releases page](https://github.com/BlizzNux/launcher/releases).
+
+When started from the menu there is no terminal; output goes to `~/.cache/blizznux/blizznux.log`
+and errors show as a desktop notification.
 
 ## Use
 

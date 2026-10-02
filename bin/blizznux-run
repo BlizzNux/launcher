@@ -41,7 +41,20 @@ USAGE
 }
 
 log() { printf '[%s] %s\n' "$APP" "$*" >&2; }
-die() { log "error: $*"; exit 1; }
+die() {
+	log "error: $*"
+	if [[ ! -t 2 ]] && command -v notify-send >/dev/null; then
+		notify-send -a BlizzNux -i com.blizznux.launcher "BlizzNux" "$*" 2>/dev/null || true
+	fi
+	exit 1
+}
+
+# Started from the app menu (no terminal): keep a log instead of losing the output.
+if [[ ! -t 2 ]]; then
+	mkdir -p "$CACHE_DIR"
+	exec >>"$CACHE_DIR/blizznux.log" 2>&1
+	printf '\n=== %s ===\n' "$(date -Is)"
+fi
 
 load_config() {
 	[[ -f $CONFIG ]] || return 0

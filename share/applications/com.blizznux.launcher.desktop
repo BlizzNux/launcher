@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=BlizzNux
+GenericName=Battle.net Launcher
+Comment=Install and launch Battle.net games through Proton, no Steam needed
+Exec=blizznux-run
+Icon=com.blizznux.launcher
+Terminal=false
+Categories=Game;
+Keywords=Battle.net;Blizzard;Proton;Wine;World of Warcraft;Overwatch;Hearthstone;Diablo;
+StartupNotify=false
