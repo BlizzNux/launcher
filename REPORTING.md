@@ -72,28 +72,46 @@ Report types and when the launcher sends them:
 landed in. `429` when rate-limited (the launcher shows "try again later"), `400` with
 `{ "error": "…" }` for a malformed body.
 
-## Account link
+## Account link (pairing)
 
-Linking never moves a credential between origins. The site shows a one-time code; the
-launcher exchanges it over HTTPS.
+Logging in links the launcher automatically. No code is typed and no credential ever
+crosses between pages: the launcher registers a pairing first, the site approves it when the
+user finishes logging in, and the launcher collects the token itself over HTTPS.
 
-1. The launcher opens `https://blizznux.com/launcher/link` in its embedded view. Logged-out
-   users see the normal login / sign-up there first.
-2. For a logged-in user the page shows a **one-time code**: 8 characters, uppercase letters and
-   digits without `0 O 1 I`, valid 10 minutes, single use, bound to that user; with a
-   "Copy code" button and the sentence "Paste this code into the BlizzNux launcher".
-3. The user pastes it into the launcher, which calls
-   `POST https://blizznux.com/api/launcher/link` with
-   `{"code": "ABCD2345", "install_id": "<uuid>", "launcher_version": "0.2.1"}`.
-   Responses: `201 {"token": "<≥32 chars, [A-Za-z0-9._-]>", "username": "<display name>"}`;
-   `400 {"error": "…"}` for an unknown, expired or used code; `429` when rate-limited
-   (suggested: 10 attempts per minute per IP).
-4. The site stores the token with the user id, the `install_id` and a creation date; the user
-   can revoke it from their profile. The launcher sends it as `user_token` on every report;
-   an unknown or revoked token is treated as anonymous (the report is still accepted).
-   "Log out of the launcher" only deletes the token locally.
+1. **Start.** The launcher calls `POST https://blizznux.com/api/launcher/link/start` with
+   `{"install_id": "<uuid>", "launcher_version": "0.2.1", "distro": "CachyOS Linux"}`.
+   Response `201 {"pair_id": "<public id>", "pair_secret": "<≥32 chars>", "expires_in": 600}`.
+   The site records the pairing with the requesting IP and the time. CSRF-exempt (desktop app).
+   Rate-limit: 10 per minute per IP.
+2. **Login.** The launcher opens `https://blizznux.com/launcher/link?pair=<pair_id>` in its
+   embedded view. For a logged-out visitor the page opens Flarum's standard LogInModal at once
+   (sign-up and password reset behave as on the site; "Remember me" is pre-ticked). If the
+   modal is dismissed, a "Log in to link the launcher" button reopens it.
+3. **Approve.** When the page runs for a logged-in user with a `pair` parameter, it calls
+   `POST /api/launcher/link/approve` with `{"pair_id": "<id>"}` using the browser session
+   (CSRF-protected, must stay that way; the launcher never calls it). The site approves
+   **automatically** when the pairing is unexpired, unused, and the approval comes from the
+   same IP that started it; otherwise it shows "Link this launcher to <username>?" with an
+   Approve button. On approval the page shows "Linked to the BlizzNux launcher as <username>".
+   A pairing is single use.
+4. **Collect.** From the moment it opened the page, the launcher polls
+   `POST /api/launcher/link/poll` with `{"pair_id": "<id>", "pair_secret": "<secret>"}`
+   every 2 seconds. Responses: `202 {"status": "pending"}`; `201 {"token": "<launcher token,
+   ≥32 chars [A-Za-z0-9._-]>", "username": "<display name>"}` once approved (the pairing is
+   then consumed); `410 {"error": "expired"}` after 10 minutes; `404` for an unknown pair or
+   wrong secret. CSRF-exempt. Rate-limit generously (it is polled): 60 per minute per IP.
+5. The site stores the token with the user id, `install_id` and creation date, revocable from
+   the user's profile. The launcher sends it as `user_token` on every report; an unknown or
+   revoked token is treated as anonymous (the report is still accepted). "Log out of the
+   launcher" only deletes the token locally.
 
-The launcher reads `BLIZZNUX_LINK_URL` as a test override for the exchange endpoint.
+After linking, the launcher shows the sharing choices once (both off by default): share
+verification reports (launches and game sessions) and send bug reports automatically.
+
+The launcher reads `BLIZZNUX_LINK_URL` as a test override for the base
+`https://blizznux.com/api/launcher/link`. The one-time-code exchange from the previous
+revision (`POST /api/launcher/link` with `code`) is no longer used by the launcher and can be
+removed once the pairing endpoints are live.
 
 ## What the site does with each type
 
