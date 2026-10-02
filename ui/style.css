@@ -1,0 +1,64 @@
+:root {
+  --bg: #0d1526; --panel: #141f36; --panel-2: #1b2a4a; --line: #253a63;
+  --text: #e8eefb; --muted: #8fa3c7; --accent: #4fa3ff; --accent-2: #ff8a3d; --sidebar: 232px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, "Noto Sans", sans-serif; overflow: hidden; }
+body { display: flex; }
+#sidebar { width: var(--sidebar); flex: none; height: 100vh; background: var(--panel);
+  border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 16px 12px; gap: 6px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; margin: 4px 6px 14px; }
+.brand img { width: 36px; height: 36px; border-radius: 9px; }
+.nav { text-align: left; background: none; border: 0; color: var(--muted); padding: 10px 12px;
+  border-radius: 8px; font-size: 15px; cursor: pointer; }
+.nav:hover { background: var(--panel-2); color: var(--text); }
+.nav.active { background: var(--panel-2); color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
+.spacer { flex: 1; }
+.launch { background: var(--accent); color: #06101f; border: 0; border-radius: 10px; padding: 12px 16px;
+  font-weight: 700; font-size: 15px; cursor: pointer; }
+.launch:hover { filter: brightness(1.1); }
+.launch.big { padding: 16px 26px; font-size: 17px; white-space: nowrap; }
+.foot { margin-top: 12px; font-size: 12px; color: var(--muted); padding: 0 6px; }
+.muted { color: var(--muted); }
+main { flex: 1; height: 100vh; overflow: auto; }
+.page { display: none; padding: 28px 32px 40px; max-width: 1100px; }
+.page.active { display: block; }
+#page-community { padding: 0; }
+h1 { margin: 0 0 6px; font-size: 28px; }
+h2 { margin: 30px 0 12px; font-size: 17px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  background: linear-gradient(135deg, var(--panel-2), var(--panel)); border: 1px solid var(--line);
+  border-radius: 16px; padding: 24px 28px; }
+.status { min-height: 1.4em; margin: 12px 4px 0; color: var(--accent); }
+.status.err { color: var(--accent-2); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px;
+  display: flex; flex-direction: column; gap: 10px; }
+.tile .name { font-weight: 600; }
+.tile .code { font-size: 12px; color: var(--muted); }
+.tile button { align-self: flex-start; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.tile button:hover { border-color: var(--accent); }
+.news { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.news li { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; cursor: pointer; }
+.news li:hover { border-color: var(--accent); }
+.news .title { font-weight: 600; }
+.news .meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.news .excerpt { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #2a1f0f;
+  border: 1px solid var(--accent-2); color: #ffd3b3; border-radius: 12px; padding: 10px 14px; margin-bottom: 16px; }
+.banner button { background: var(--accent-2); border: 0; border-radius: 8px; padding: 6px 12px; font-weight: 700; cursor: pointer; }
+.hidden { display: none !important; }
+.form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
+label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+label small { font-weight: 400; }
+input, select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 10px; font: inherit; }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.row button, #cfg-save { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 14px; cursor: pointer; font: inherit; }
+.row button:hover, #cfg-save:hover { border-color: var(--accent); }
+.diag { background: #0a1120; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  white-space: pre-wrap; font: 13px/1.4 monospace; min-height: 3em; max-height: 40vh; overflow: auto; }

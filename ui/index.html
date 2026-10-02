@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlizzNux</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="brand"><img src="logo.png" alt=""><span>BlizzNux</span></div>
+    <button class="nav active" data-page="home">Home</button>
+    <button class="nav" data-page="community">Community</button>
+    <button class="nav" data-page="settings">Settings</button>
+    <div class="spacer"></div>
+    <button id="launch-side" class="launch">Launch Battle.net</button>
+    <div class="foot">
+      <div>v<span id="version">?</span></div>
+      <div class="muted">Not affiliated with Blizzard Entertainment</div>
+    </div>
+  </nav>
+
+  <main>
+    <section id="page-home" class="page active">
+      <div id="update-banner" class="banner hidden">
+        <span id="update-text"></span>
+        <button id="update-btn">Get it</button>
+      </div>
+      <header class="hero">
+        <div>
+          <h1>Battle.net on Linux</h1>
+          <p class="muted">Through Proton, no Steam needed. Launch the client or jump straight into a game.</p>
+        </div>
+        <button id="launch-main" class="launch big">Launch Battle.net</button>
+      </header>
+      <p id="status" class="status"></p>
+
+      <h2>Games</h2>
+      <div id="games" class="tiles"></div>
+
+      <h2>Latest from BlizzNux</h2>
+      <ul id="news" class="news"><li class="muted">Loading…</li></ul>
+    </section>
+
+    <section id="page-community" class="page">
+      <!-- The forum webview is drawn over this area by the app. -->
+    </section>
+
+    <section id="page-settings" class="page">
+      <h1>Settings</h1>
+      <div class="form">
+        <label>Battle.net prefix
+          <input id="cfg-prefix" placeholder="~/.local/share/blizznux/prefix">
+          <small class="muted">Point this at an existing Steam, Lutris or Bottles prefix to reuse installed games.</small>
+        </label>
+        <label>Proton build
+          <input id="cfg-proton" placeholder="auto (Proton-CachyOS, else newest GE-Proton)">
+        </label>
+        <label>NVIDIA render offload
+          <select id="cfg-offload">
+            <option value="auto">Auto (on for hybrid laptops)</option>
+            <option value="on">Always on</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <div class="row">
+          <button id="cfg-save">Save</button>
+          <span id="cfg-status" class="muted"></span>
+        </div>
+      </div>
+
+      <h2>Display scaling</h2>
+      <div class="row">
+        <input id="dpi" type="number" min="72" max="384" step="12" value="144" style="width:7em">
+        <button id="dpi-apply">Apply DPI inside the prefix</button>
+        <span class="muted">96 = 100 %, 120 = 125 %, 144 = 150 %, 192 = 200 %</span>
+      </div>
+
+      <h2>Diagnostics</h2>
+      <div class="row">
+        <button id="doctor">Run doctor</button>
+        <button id="log">Show log</button>
+      </div>
+      <pre id="diag" class="diag"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

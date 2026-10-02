@@ -15,9 +15,23 @@ without Steam being installed.
 
 ## Status
 
-**v0.1 — command-line launcher.** One script that installs, imports and launches Battle.net.
-A desktop application (news feed from BlizzNux, community tab, game tiles, auto-update) is
-the next milestone; this script is its engine and stays usable on its own.
+**v0.1 — command-line launcher.** One script, `bin/blizznux-run`, that installs, imports and
+launches Battle.net. It is the engine for everything else and stays usable on its own.
+
+**v0.2 — desktop app (in development).** A Tauri 2 application in `src-tauri/` and `ui/`:
+Home with game tiles and the latest BlizzNux updates, a Community tab that is the BlizzNux
+forum itself, Settings for prefix, Proton, GPU offload and display scaling, and an update
+check against GitHub releases. Launching goes through the same script.
+
+### Building the desktop app
+
+Requires Rust (stable), Node, and WebKitGTK 4.1 with GTK 3 development files.
+
+```sh
+npm install
+npm run dev      # run with live reload
+npm run build    # AppImage, deb and rpm under src-tauri/target/release/bundle/
+```
 
 Tested on CachyOS with Proton-CachyOS and a hybrid AMD + NVIDIA laptop. Other distributions
 are best effort; please report what you find. Guides and the compatibility list live on the
