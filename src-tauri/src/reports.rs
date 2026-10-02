@@ -605,9 +605,10 @@ pub async fn send_report(report: serde_json::Value) -> Result<String, String> {
 }
 
 /// Successful automatic reports are sent at most once per day per build; failures always.
-fn already_sent_today(kind: &str, game: Option<&str>, outcome: &str) -> bool {
+/// Returns the stamp to record once the site has accepted the report, or None when it was sent already.
+fn daily_stamp(kind: &str, game: Option<&str>, outcome: &str) -> Option<String> {
     if outcome != "ok" {
-        return false;
+        return Some(String::new());
     }
     let build = match (kind, game) {
         ("launch", _) => battlenet_info().version,
@@ -616,30 +617,43 @@ fn already_sent_today(kind: &str, game: Option<&str>, outcome: &str) -> bool {
     };
     let stamp = format!("{kind}:{build}:{}", &now_iso()[..10]);
     let key = if kind == "launch" { "LAST_LAUNCH_OK" } else { "LAST_RUN_OK" };
-    let mut c = load_config();
+    let c = load_config();
     if c.get(key).map_or(false, |v| v.split(';').any(|s| s == stamp)) {
-        return true;
+        return None;
     }
-    // keep the last few stamps so several games on one day are each sent once
+    Some(stamp)
+}
+
+/// Record a sent report so the same success is not repeated today; keeps the last few stamps
+/// so several games on one day are each sent once.
+fn mark_sent(kind: &str, stamp: &str) {
+    if stamp.is_empty() {
+        return;
+    }
+    let key = if kind == "launch" { "LAST_LAUNCH_OK" } else { "LAST_RUN_OK" };
+    let mut c = load_config();
     let mut stamps: Vec<String> = c.get(key).map(|v| v.split(';').filter(|s| !s.is_empty()).map(String::from).collect()).unwrap_or_default();
-    stamps.push(stamp);
+    stamps.push(stamp.to_string());
     while stamps.len() > 12 { stamps.remove(0); }
     c.insert(key.into(), stamps.join(";"));
     let _ = save_config(&c);
-    false
 }
 
 /// Send a report in the background, only when the user linked an account and opted in.
 fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str, comment: String) {
-    if !sharing_enabled() || already_sent_today(kind, game.as_deref(), outcome) {
+    if !sharing_enabled() {
         return;
     }
+    let Some(stamp) = daily_stamp(kind, game.as_deref(), outcome) else { return };
     let (kind, outcome) = (kind.to_string(), outcome.to_string());
     let h = app.clone();
     tauri::async_runtime::spawn(async move {
         match build_report(kind.clone(), game, Some(outcome.clone()), Some(comment)) {
             Ok(body) => match send_report(body).await {
-                Ok(url) => { let _ = h.emit("report-sent", serde_json::json!({ "kind": kind, "outcome": outcome, "url": url })); }
+                Ok(url) => {
+                    mark_sent(&kind, &stamp);   // only an accepted report counts for today
+                    let _ = h.emit("report-sent", serde_json::json!({ "kind": kind, "outcome": outcome, "url": url }));
+                }
                 Err(e) => eprintln!("[report] {kind} not sent: {e}"),
             },
             Err(e) => eprintln!("[report] {kind} not built: {e}"),
