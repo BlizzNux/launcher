@@ -547,6 +547,28 @@ fn read_log() -> String {
     lines[start..].join("\n")
 }
 
+/// Headless commands: `blizznux --cli wow-installs|wowup-status|wowup-install|wowup-seed|readiness`
+pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
+    let out = match cmd {
+        "wow-installs" => serde_json::to_string_pretty(&addons::wow_installs()),
+        "wowup-status" => serde_json::to_string_pretty(&addons::wowup_status()),
+        "wowup-install" => match tauri::async_runtime::block_on(addons::wowup_install()) {
+            Ok(v) => Ok(format!("installed WowUp {v}")),
+            Err(e) => { eprintln!("error: {e}"); return 1; }
+        },
+        "wowup-seed" => match addons::seed_wowup_installs() {
+            Ok(n) => Ok(format!("registered {n} install(s) in {}", addons::wowup_config_dir().display())),
+            Err(e) => { eprintln!("error: {e}"); return 1; }
+        },
+        "readiness" => serde_json::to_string_pretty(&readiness()),
+        _ => { eprintln!("unknown command"); return 2; }
+    };
+    match out {
+        Ok(text) => { println!("{text}"); 0 }
+        Err(e) => { eprintln!("error: {e}"); 1 }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK renders with hardware acceleration by default. If the forum view shows
@@ -591,6 +613,10 @@ pub fn run() {
             addons::open_addons_folder,
             addons::install_addon_bytes,
             addons::install_addon_url,
+            addons::wowup_status,
+            addons::wowup_install,
+            addons::wowup_launch,
+            addons::wowup_remove,
             app_version,
             open_external,
             read_log

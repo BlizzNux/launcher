@@ -72,10 +72,46 @@ async function loadAddons() {
   $("#addons-none").classList.toggle("hidden", !none);
   $("#addons-ui").classList.toggle("hidden", none);
   if (none) return;
+  refreshWowUp();
   if (!wow.current || !wow.installs.some((w) => w.flavor === wow.current.flavor)) wow.current = wow.installs[0];
   $("#flavors").innerHTML = wow.installs.map((w) => `<button class="flavor${w.flavor === wow.current.flavor ? " active" : ""}" data-flavor="${w.flavor}">${esc(w.label)}</button>`).join("");
   $("#flavors").querySelectorAll(".flavor").forEach((b) => { b.onclick = () => { wow.current = wow.installs.find((w) => w.flavor === b.dataset.flavor); loadAddons(); }; });
   await refreshAddonList();
+}
+
+let wowupTimer;
+async function refreshWowUp() {
+  let s;
+  try { s = await invoke("wowup_status"); } catch (e) { $("#wowup-status").textContent = String(e); return; }
+  const btn = $("#wowup-action"), rm = $("#wowup-remove"), st = $("#wowup-status");
+  clearInterval(wowupTimer);
+  if (s.downloading) {
+    const pct = s.total ? Math.round(s.downloaded * 100 / s.total) : 0;
+    st.textContent = `Downloading WowUp… ${pct}% (${Math.round(s.downloaded / 1048576)} MB)`;
+    btn.disabled = true; btn.textContent = "Downloading…";
+    wowupTimer = setInterval(refreshWowUp, 1500);
+    return;
+  }
+  btn.disabled = false;
+  if (s.installed) {
+    st.textContent = `WowUp ${s.version} is installed.`;
+    btn.textContent = "Open WowUp";
+    btn.onclick = async () => { try { addonsStatus(await invoke("wowup_launch")); } catch (e) { addonsStatus(String(e), true); } };
+    rm.classList.remove("hidden");
+    rm.onclick = async () => { if (!confirm("Remove WowUp? Your addons stay in place.")) return; try { await invoke("wowup_remove"); } catch (e) { addonsStatus(String(e), true); } refreshWowUp(); };
+  } else {
+    st.textContent = "Not installed. About 120 MB, downloaded from WowUp's GitHub releases.";
+    btn.textContent = "Install WowUp";
+    rm.classList.add("hidden");
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = "Downloading…"; st.textContent = "Starting download…";
+      wowupTimer = setInterval(refreshWowUp, 1500);
+      try { const v = await invoke("wowup_install"); addonsStatus(`WowUp ${v} installed.`); }
+      catch (e) { addonsStatus(String(e), true); }
+      clearInterval(wowupTimer);
+      refreshWowUp();
+    };
+  }
 }
 
 async function refreshAddonList() {

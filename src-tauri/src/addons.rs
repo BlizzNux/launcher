@@ -361,3 +361,209 @@ mod tests {
         assert_eq!(pick_asset_for_flavor(&assets, "_classic_"), Some("https://x/Addon-1.0-mists.zip"));
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// WowUp bridge: install the WowUp (CurseForge build) AppImage and open it with the WoW
+// installs from our prefix already registered, so the user never hunts for Wow.exe.
+// ---------------------------------------------------------------------------------------
+
+const WOWUP_RELEASES: &str = "https://api.github.com/repos/WowUp/WowUp.CF/releases/latest";
+const WOWUP_CONFIG_DIRS: [&str; 3] = ["WowUpCf", "WowUp-CF", "wowup-cf"];
+
+fn xdg(var: &str, fallback: &str) -> PathBuf {
+    std::env::var(var).map(PathBuf::from).unwrap_or_else(|_| crate::home().join(fallback))
+}
+
+fn wowup_dir() -> PathBuf {
+    xdg("XDG_DATA_HOME", ".local/share").join("blizznux").join("wowup")
+}
+
+fn wowup_appimage() -> PathBuf {
+    wowup_dir().join("WowUp-CF.AppImage")
+}
+
+#[derive(serde::Serialize)]
+pub struct WowUpStatus {
+    installed: bool,
+    version: String,
+    downloading: bool,
+    downloaded: u64,
+    total: u64,
+}
+
+fn progress_file() -> PathBuf {
+    wowup_dir().join("download.progress")
+}
+
+#[tauri::command]
+pub fn wowup_status() -> WowUpStatus {
+    let app = wowup_appimage();
+    let version = fs::read_to_string(wowup_dir().join("version")).unwrap_or_default().trim().to_string();
+    let (downloading, downloaded, total) = fs::read_to_string(progress_file())
+        .ok()
+        .and_then(|t| {
+            let mut it = t.split_whitespace();
+            Some((true, it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+        })
+        .unwrap_or((false, 0, 0));
+    WowUpStatus { installed: app.is_file(), version, downloading, downloaded, total }
+}
+
+/// Download the latest WowUp-CF AppImage. Progress is written to a file the UI polls.
+#[tauri::command]
+pub async fn wowup_install() -> Result<String, String> {
+    let dir = wowup_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let rel: serde_json::Value = client
+        .get(WOWUP_RELEASES)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|_| "could not read the WowUp release list".to_string())?;
+    let version = rel["tag_name"].as_str().unwrap_or("unknown").trim_start_matches('v').to_string();
+    let asset = rel["assets"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["name"].as_str().map_or(false, |n| n.ends_with(".AppImage"))))
+        .ok_or("the latest WowUp release has no Linux AppImage")?;
+    let url = asset["browser_download_url"].as_str().ok_or("bad release data")?.to_string();
+    let total = asset["size"].as_u64().unwrap_or(0);
+
+    let tmp = dir.join("WowUp-CF.AppImage.part");
+    let mut resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("download failed: HTTP {}", resp.status()));
+    }
+    let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let mut done: u64 = 0;
+    let mut last_written: u64 = 0;
+    use std::io::Write;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        done += chunk.len() as u64;
+        if done - last_written > 1_000_000 {
+            let _ = fs::write(progress_file(), format!("{done} {total}"));
+            last_written = done;
+        }
+    }
+    drop(file);
+    let _ = fs::remove_file(progress_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+    fs::rename(&tmp, wowup_appimage()).map_err(|e| e.to_string())?;
+    fs::write(dir.join("version"), &version).map_err(|e| e.to_string())?;
+    Ok(version)
+}
+
+fn flavor_client(flavor: &str) -> Option<(u32, &'static str)> {
+    // (WowUp WowClientType, executable) — values from WowUp's wowup-lib types.ts
+    match flavor {
+        "_retail_" => Some((0, "Wow.exe")),
+        "_classic_" => Some((1, "WowClassic.exe")),
+        "_ptr_" => Some((2, "WowT.exe")),
+        "_classic_era_" => Some((6, "WowClassic.exe")),
+        "_xptr_" => Some((8, "WowT.exe")),
+        _ => None,
+    }
+}
+
+/// WowUp's Electron user-data directory: an existing one if present, else the default name.
+pub(crate) fn wowup_config_dir() -> PathBuf {
+    let base = xdg("XDG_CONFIG_HOME", ".config");
+    for d in WOWUP_CONFIG_DIRS {
+        let p = base.join(d);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    base.join(WOWUP_CONFIG_DIRS[0])
+}
+
+/// Register our WoW installs in WowUp's preferences (merging with whatever is there).
+pub(crate) fn seed_wowup_installs() -> Result<usize, String> {
+    let installs = wow_installs();
+    if installs.is_empty() {
+        return Ok(0);
+    }
+    let dir = wowup_config_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join("preferences.json");
+    let mut prefs: serde_json::Value = fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !prefs.is_object() {
+        prefs = serde_json::json!({});
+    }
+    let mut list: Vec<serde_json::Value> = prefs["wow_installations"].as_array().cloned().unwrap_or_default();
+    let mut added = 0;
+    for w in installs {
+        let Some((client_type, exe)) = flavor_client(&w.flavor) else { continue };
+        let location = PathBuf::from(&w.path).join(exe);
+        if !location.is_file() {
+            continue;
+        }
+        let loc = location.display().to_string();
+        if list.iter().any(|i| i["location"].as_str() == Some(loc.as_str())) {
+            continue;
+        }
+        let id = format!("blizznux-{}", w.flavor.trim_matches('_'));
+        list.push(serde_json::json!({
+            "id": id,
+            "clientType": client_type,
+            "defaultAddonChannelType": 0,
+            "defaultAutoUpdate": false,
+            "label": "BlizzNux",
+            "displayName": format!("BlizzNux {}", w.label),
+            "location": loc,
+            "selected": list.is_empty(),
+        }));
+        added += 1;
+    }
+    prefs["wow_installations"] = serde_json::Value::Array(list);
+    fs::write(&file, serde_json::to_string_pretty(&prefs).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(added)
+}
+
+#[tauri::command]
+pub fn wowup_launch() -> Result<String, String> {
+    let app = wowup_appimage();
+    if !app.is_file() {
+        return Err("WowUp is not installed yet".into());
+    }
+    let added = seed_wowup_installs()?;
+    let mut cmd = Command::new(&app);
+    // AppImages need FUSE to mount themselves; fall back to extracting when it is missing.
+    if !Path::new("/usr/lib/libfuse.so.2").exists() && !Path::new("/usr/lib64/libfuse.so.2").exists()
+        && !Path::new("/usr/lib/x86_64-linux-gnu/libfuse.so.2").exists()
+    {
+        cmd.env("APPIMAGE_EXTRACT_AND_RUN", "1");
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(format!("WowUp started ({added} WoW install(s) registered)"))
+}
+
+#[tauri::command]
+pub fn wowup_remove() -> Result<(), String> {
+    let dir = wowup_dir();
+    if dir.is_dir() {
+        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
