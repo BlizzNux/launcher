@@ -478,9 +478,34 @@ pub async fn send_report(report: serde_json::Value) -> Result<String, String> {
     Ok(url)
 }
 
+/// Successful automatic reports are sent at most once per day per build; failures always.
+fn already_sent_today(kind: &str, game: Option<&str>, outcome: &str) -> bool {
+    if outcome != "ok" {
+        return false;
+    }
+    let build = match (kind, game) {
+        ("launch", _) => battlenet_info().version,
+        ("run", Some(code)) => game_info(code).map(|g| format!("{}:{}", g.code, g.version)).unwrap_or_default(),
+        _ => String::new(),
+    };
+    let stamp = format!("{kind}:{build}:{}", &now_iso()[..10]);
+    let key = if kind == "launch" { "LAST_LAUNCH_OK" } else { "LAST_RUN_OK" };
+    let mut c = load_config();
+    if c.get(key).map_or(false, |v| v.split(';').any(|s| s == stamp)) {
+        return true;
+    }
+    // keep the last few stamps so several games on one day are each sent once
+    let mut stamps: Vec<String> = c.get(key).map(|v| v.split(';').filter(|s| !s.is_empty()).map(String::from).collect()).unwrap_or_default();
+    stamps.push(stamp);
+    while stamps.len() > 12 { stamps.remove(0); }
+    c.insert(key.into(), stamps.join(";"));
+    let _ = save_config(&c);
+    false
+}
+
 /// Send a report in the background, only when the user linked an account and opted in.
 fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str, comment: String) {
-    if !sharing_enabled() {
+    if !sharing_enabled() || already_sent_today(kind, game.as_deref(), outcome) {
         return;
     }
     let (kind, outcome) = (kind.to_string(), outcome.to_string());

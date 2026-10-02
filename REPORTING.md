@@ -62,8 +62,8 @@ Report types and when the launcher sends them:
 
 | type | when | outcome | sent |
 |------|------|---------|------|
-| `launch` | the user pressed Launch; Battle.net appeared within 2 min (`ok`) or did not (`failed`, with log) | `ok` / `failed` | automatically, only when the user opted into sharing |
-| `run` | a game session ended after ≥ 60 s (`ok`), or the game vanished within 60 s (`broken`) | `ok` / `broken` automatically; `perfect` / `issues` / `broken` when the user answers the prompt | automatic ones only when sharing; prompt answers always, after a preview unless the user turned previews off |
+| `launch` | the user pressed Launch; Battle.net appeared within 2 min (`ok`) or did not (`failed`, with log) | `ok` / `failed` | automatically, only when the user opted into sharing; `ok` at most once per day per Battle.net build per install, `failed` always |
+| `run` | a game session ended after ≥ 60 s (`ok`), or the game vanished within 60 s (`broken`) | `ok` / `broken` automatically; `perfect` / `issues` / `broken` when the user answers the prompt | automatic ones only when sharing (`ok` at most once per day per game build per install, `broken` always); prompt answers always, after a preview unless the user turned previews off |
 | `bug` | the user chose "Report a problem", or a launch failed and they confirmed | — | after a preview |
 
 ### Response
@@ -112,4 +112,16 @@ The launcher reads `BLIZZNUX_LINK_URL` as a test override for the exchange endpo
 
 ## Rate limits (endpoint side)
 
-Per `install_id`: 10 reports per hour. Per IP: 60 per hour. Body limit 256 KB.
+Per `install_id`: 10 bug/run reports per hour; `launch` reports are counted and limited
+separately so the automatic stream can never crowd out a report a person chose to send.
+Per IP: 60 per hour. Body limit 256 KB.
+
+## What the site shows
+
+- The user's own profile gets a compatibility section listing their launches and runs (date,
+  game and build or Battle.net build, outcome, launcher version), visible to the user and staff.
+  Failure logs are visible to that user and staff only. Staff also get an admin page of
+  failures with logs.
+- Linked reports in threads carry a "by @name" byline; the Updates tag permissions stay as they are.
+- Automatic `ok` runs are aggregated per build over distinct installs into one site-maintained
+  reply, e.g. "Ran without problems for N Linux users so far (last report <date>)."
