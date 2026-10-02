@@ -3,11 +3,6 @@
 const { invoke } = window.__TAURI__.core;
 const $ = (s) => document.querySelector(s);
 
-const GAMES = [
-  ["WoW", "World of Warcraft"], ["WTCG", "Hearthstone"], ["Hero", "Heroes of the Storm"],
-  ["Pro", "Overwatch 2"], ["Fen", "Diablo IV"], ["D3", "Diablo III"],
-  ["OSI", "Diablo II: Resurrected"], ["S2", "StarCraft II"], ["W3", "Warcraft III: Reforged"],
-];
 const FORUM = "https://blizznux.com/";
 const RELEASES = "https://api.github.com/repos/BlizzNux/launcher/releases/latest";
 
@@ -224,8 +219,6 @@ async function refreshState(openSetupIfMissing = false) {
   try { state = await invoke("install_state"); } catch (e) { console.error(e); return state; }
   refreshAddonsButton();
   $("#launch").textContent = state.installed ? "Launch Battle.net" : "Set up Battle.net";
-  $("#open-games").disabled = !state.installed;
-  $("#open-games").title = state.installed ? "" : "Install Battle.net first";
   if (openSetupIfMissing && !state.installed) { showPanel("setup"); loadChecks(); }
   return state;
 }
@@ -241,7 +234,7 @@ async function launch(game) {
 
 async function showPanel(name) {
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report" }[name] || "";
+  $("#panel-title").textContent = { settings: "Settings", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report" }[name] || "";
   if (name === "addons") loadAddons();
   $("#panel").classList.remove("hidden");
 }
@@ -330,14 +323,7 @@ async function init() {
   $("#version").textContent = version;
   $("#title-version").textContent = `v${version}`;
   initTitlebar();
-  $("#games").innerHTML = GAMES.map(([code, name]) =>
-    `<button class="tile" data-game="${code}"><span class="name">${name}</span><span class="code">${code}</span></button>`).join("");
-  $("#games").addEventListener("click", (e) => {
-    const t = e.target.closest("[data-game]");
-    if (t) { hidePanel().then(() => launch(t.dataset.game)); }
-  });
   $("#launch").onclick = () => launch();
-  $("#open-games").onclick = () => showPanel("games");
   $("#home").onclick = () => { $("#site").src = FORUM; };
   $("#panel").addEventListener("click", (e) => { if (e.target === $("#panel")) hidePanel(); });
   $("#open-settings").onclick = () => showPanel("settings");
