@@ -49,7 +49,7 @@ body { display: flex; flex-direction: column; }
 .panel-page.active { display: block; }
 h1 { margin: 0 0 14px; font-size: 26px; }
 h2 { margin: 30px 0 12px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-p { max-width: 70ch; }
+p { max-width: none; margin: 0 0 14px; }
 a { color: var(--accent); }
 .form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
