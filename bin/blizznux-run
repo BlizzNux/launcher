@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# blizznux-run — install, import and launch Battle.net on Linux through Proton via umu-launcher.
+# No Steam required. Part of the BlizzNux launcher: https://github.com/BlizzNux/launcher
+# Copyright (C) 2026 Karl Bullock. Licensed under the GPL-3.0-or-later; see LICENSE.
+set -euo pipefail
+
+VERSION=0.1.0
+APP=blizznux
+CONFIG_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/$APP
+DATA_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/$APP
+CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/$APP
+CONFIG=$CONFIG_DIR/config
+# Blizzard's own download endpoint. The installer is never redistributed by this project.
+INSTALLER_URL='https://www.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live'
+LAUNCHER_REL='drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe'
+
+PREFIX=""; PROTON=""; OFFLOAD=auto; GAME=""
+
+usage() {
+	cat <<USAGE
+blizznux-run $VERSION — Battle.net on Linux through Proton, no Steam needed.
+
+Usage:
+  blizznux-run [launch] [--game CODE]   Launch Battle.net (installs it first if needed).
+                                        --game starts a game right away, e.g. --game WoW
+  blizznux-run install                  Download Blizzard's installer and run it.
+  blizznux-run import PATH              Use an existing Battle.net prefix (Steam compatdata/<id>/pfx,
+                                        Lutris, Bottles) instead of installing again.
+  blizznux-run dpi N                    Set the Windows DPI inside the prefix (96 = 100%, 144 = 150%).
+  blizznux-run doctor                   Show what would be used and why.
+
+Options:
+  --prefix DIR      Prefix to use for this run (default: \$XDG_DATA_HOME/blizznux/prefix).
+  --proton DIR      Proton build to use (default: Proton-CachyOS if installed, else newest GE-Proton,
+                    else let umu download GE-Proton).
+  --offload on|off  NVIDIA PRIME render offload (default: auto, on when a hybrid NVIDIA setup is found).
+
+Game codes for --game: WoW, WTCG (Hearthstone), Hero (Heroes of the Storm), Pro (Overwatch),
+  D3, Fen (Diablo IV), OSI (Diablo II Resurrected), S2 (StarCraft II), W3 (Warcraft III).
+USAGE
+}
+
+log() { printf '[%s] %s\n' "$APP" "$*" >&2; }
+die() { log "error: $*"; exit 1; }
+
+load_config() {
+	[[ -f $CONFIG ]] || return 0
+	local k v
+	while IFS='=' read -r k v; do
+		case $k in PREFIX|PROTON|OFFLOAD) printf -v "$k" '%s' "$v" ;; esac
+	done < "$CONFIG"
+}
+
+save_config() {
+	mkdir -p "$CONFIG_DIR"
+	printf 'PREFIX=%s\nPROTON=%s\nOFFLOAD=%s\n' "$PREFIX" "$PROTON" "$OFFLOAD" > "$CONFIG"
+}
+
+find_proton() {
+	if [[ -n $PROTON ]]; then
+		[[ -x $PROTON/proton ]] || die "no Proton build at $PROTON"
+		echo "$PROTON"; return
+	fi
+	local d
+	for d in /usr/share/steam/compatibilitytools.d/proton-cachyos*; do
+		[[ -x $d/proton ]] && { echo "$d"; return; }
+	done
+	d=$(ls -d "$HOME"/.local/share/Steam/compatibilitytools.d/GE-Proton* 2>/dev/null | sort -V | tail -1 || true)
+	[[ -n $d && -x $d/proton ]] && { echo "$d"; return; }
+	echo "GE-Proton"   # umu-launcher downloads the latest GE-Proton on first use
+}
+
+hybrid_nvidia() {
+	[[ -d /proc/driver/nvidia ]] || return 1
+	(( $(ls /dev/dri/ 2>/dev/null | grep -c '^card') >= 2 ))
+}
+
+gpu_env() {
+	case $OFFLOAD in
+	off) return ;;
+	on) ;;
+	*) hybrid_nvidia || return ;;
+	esac
+	export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only
+}
+
+ensure_prefix() {
+	[[ -n $PREFIX ]] || PREFIX=$DATA_DIR/prefix
+	mkdir -p "$PREFIX"
+	[[ -f $CONFIG ]] || save_config
+}
+
+run_umu() {
+	command -v umu-run >/dev/null || die "umu-launcher is not installed (package: umu-launcher)"
+	local proton; proton=$(find_proton)
+	export WINEPREFIX=$PREFIX PROTONPATH=$proton GAMEID=${GAMEID:-umu-default} STORE=none PROTON_VERB=waitforexitandrun
+	gpu_env
+	local inhibit=()
+	command -v systemd-inhibit >/dev/null && inhibit=(systemd-inhibit --what=idle:sleep --why="Battle.net is running")
+	log "proton: $proton"; log "prefix: $PREFIX"
+	"${inhibit[@]}" umu-run "$@"
+}
+
+cmd_install() {
+	ensure_prefix
+	if [[ -f $PREFIX/$LAUNCHER_REL ]]; then log "Battle.net is already installed in $PREFIX"; return; fi
+	mkdir -p "$CACHE_DIR"
+	local setup=$CACHE_DIR/Battle.net-Setup.exe
+	log "downloading the Battle.net installer from Blizzard"
+	curl -fL --retry 3 --progress-bar -o "$setup" "$INSTALLER_URL"
+	log "running the installer: sign in, let it finish, then close Battle.net"
+	run_umu "$setup"
+	[[ -f $PREFIX/$LAUNCHER_REL ]] || die "the installer finished but Battle.net was not found; run 'blizznux-run install' again"
+	log "installed"
+}
+
+cmd_import() {
+	local src=${1:?usage: blizznux-run import PATH}
+	[[ -f $src/$LAUNCHER_REL ]] || die "no Battle.net installation under $src (expected $LAUNCHER_REL)"
+	PREFIX=$(realpath "$src")
+	save_config
+	log "using existing prefix: $PREFIX"
+}
+
+cmd_dpi() {
+	local n=${1:?usage: blizznux-run dpi N}
+	[[ $n =~ ^[0-9]+$ ]] || die "dpi must be a number, e.g. 144"
+	ensure_prefix
+	run_umu reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$n" /f
+	run_umu reg add 'HKCU\Software\Wine\Fonts' /v LogPixels /t REG_DWORD /d "$n" /f
+	log "DPI set to $n"
+}
+
+cmd_launch() {
+	ensure_prefix
+	[[ -f $PREFIX/$LAUNCHER_REL ]] || cmd_install
+	if [[ -n $GAME ]]; then
+		run_umu "$PREFIX/$LAUNCHER_REL" --exec="launch $GAME"
+	else
+		run_umu "$PREFIX/$LAUNCHER_REL"
+	fi
+}
+
+cmd_doctor() {
+	ensure_prefix
+	echo "blizznux-run $VERSION"
+	echo "umu-run:   $(command -v umu-run || echo MISSING) $(umu-run --version 2>/dev/null | head -1)"
+	echo "proton:    $(find_proton)"
+	echo "prefix:    $PREFIX $([[ -f $PREFIX/$LAUNCHER_REL ]] && echo '(Battle.net installed)' || echo '(Battle.net not installed)')"
+	echo "offload:   $OFFLOAD $(hybrid_nvidia && echo '(hybrid NVIDIA detected)' || echo '(no hybrid NVIDIA)')"
+	echo "config:    $CONFIG"
+}
+
+load_config
+cmd=launch
+while (( $# )); do
+	case $1 in
+	launch|install|import|dpi|doctor) cmd=$1 ;;
+	--game) GAME=${2:?--game needs a code}; shift ;;
+	--prefix) PREFIX=${2:?--prefix needs a directory}; shift ;;
+	--proton) PROTON=${2:?--proton needs a directory}; shift ;;
+	--offload) OFFLOAD=${2:?--offload needs on|off|auto}; shift ;;
+	-h|--help) usage; exit 0 ;;
+	-V|--version) echo "$VERSION"; exit 0 ;;
+	*) break ;;
+	esac
+	shift
+done
+case $cmd in
+launch) cmd_launch ;;
+install) cmd_install ;;
+import) cmd_import "${1:-}" ;;
+dpi) cmd_dpi "${1:-}" ;;
+doctor) cmd_doctor ;;
+esac
