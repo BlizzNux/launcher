@@ -7,42 +7,30 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <nav id="sidebar">
-    <div class="brand"><img src="logo.png" alt=""><span>BlizzNux</span></div>
-    <button class="nav active" data-page="home">Home</button>
-    <button class="nav" id="nav-community" title="Opens blizznux.com in your browser">Community ↗</button>
-    <button class="nav" data-page="settings">Settings</button>
-    <div class="spacer"></div>
-    <button id="launch-side" class="launch">Launch Battle.net</button>
-    <div class="foot">
-      <div>v<span id="version">?</span></div>
-      <div class="muted">Not affiliated with Blizzard Entertainment</div>
+  <!-- Bottom control bar: shown under the BlizzNux.com view -->
+  <div id="bar">
+    <div class="brand" id="home" title="Back to the BlizzNux.com front page"><img src="logo.png" alt=""><span>BlizzNux</span></div>
+    <button id="launch" class="launch">Launch Battle.net</button>
+    <div class="play">
+      <select id="game" aria-label="Game"></select>
+      <button id="play">Play</button>
     </div>
-  </nav>
+    <span id="status" class="status"></span>
+    <div class="spacer"></div>
+    <button id="update" class="update hidden">Update available</button>
+    <button id="open-settings" class="flat">Settings</button>
+    <button id="open-disclaimer" class="flat">Disclaimer</button>
+  </div>
 
-  <main>
-    <section id="page-home" class="page active">
-      <div id="update-banner" class="banner hidden">
-        <span id="update-text"></span>
-        <button id="update-btn">Get it</button>
-      </div>
-      <header class="hero">
-        <div>
-          <h1>Battle.net on Linux</h1>
-          <p class="muted">Through Proton, no Steam needed. Launch the client or jump straight into a game. Updates below come from blizznux.com; clicking one opens it in your browser.</p>
-        </div>
-        <button id="launch-main" class="launch big">Launch Battle.net</button>
-      </header>
-      <p id="status" class="status"></p>
+  <!-- Full-window panels: settings and disclaimer -->
+  <div id="panel" class="hidden">
+    <header class="panel-head">
+      <button id="back" class="flat">← Back to BlizzNux.com</button>
+      <span id="panel-title"></span>
+      <span class="muted">v<span id="version">?</span></span>
+    </header>
 
-      <h2>Games</h2>
-      <div id="games" class="tiles"></div>
-
-      <h2>Latest from BlizzNux</h2>
-      <ul id="news" class="news"><li class="muted">Loading…</li></ul>
-    </section>
-
-    <section id="page-settings" class="page">
+    <section id="panel-settings" class="panel-page">
       <h1>Settings</h1>
       <div class="form">
         <label>Battle.net prefix
@@ -79,7 +67,22 @@
       </div>
       <pre id="diag" class="diag"></pre>
     </section>
-  </main>
+
+    <section id="panel-disclaimer" class="panel-page">
+      <h1>Disclaimer</h1>
+      <p>BlizzNux is a community project. It is not affiliated with, endorsed by, or sponsored by
+        Blizzard Entertainment, Inc. Battle.net and all game titles are trademarks of their
+        respective owners.</p>
+      <p>This launcher never redistributes Blizzard software. The official Battle.net installer is
+        downloaded from Blizzard's own servers on your machine, and the official client runs
+        unmodified inside a Proton prefix via umu-launcher.</p>
+      <p>Use of Blizzard's services is subject to Blizzard's terms. Some titles cannot run on
+        Linux because of their anti-cheat; see the compatibility list on the BlizzNux wiki.</p>
+      <p>BlizzNux launcher is free software under the GNU General Public License v3.0 or later.
+        Source: <a href="#" data-url="https://github.com/BlizzNux/launcher">github.com/BlizzNux/launcher</a>
+        · Wiki: <a href="#" data-url="https://blizznux.com/wiki">blizznux.com/wiki</a></p>
+    </section>
+  </div>
 
   <script src="app.js"></script>
 </body>

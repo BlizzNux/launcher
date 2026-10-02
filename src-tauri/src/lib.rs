@@ -3,9 +3,73 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use tauri::{AppHandle, Manager};
+use std::sync::Mutex;
+use tauri::webview::WebviewBuilder;
+use tauri::window::WindowBuilder;
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent};
 
+const FORUM: &str = "https://blizznux.com/";
 const FORUM_HOST: &str = "blizznux.com";
+const UI: &str = "ui";
+const COMMUNITY: &str = "community";
+/// Height of the control bar at the bottom of the window, in logical pixels.
+const BAR: f64 = 64.0;
+
+/// Whether the control webview is the bottom bar or covers the window (settings, disclaimer).
+#[derive(Clone, Copy, PartialEq)]
+enum UiMode {
+    Bar,
+    Full,
+}
+
+struct UiState(Mutex<UiMode>);
+
+fn layout(app: &AppHandle, window: &tauri::Window) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let Ok(size) = window.inner_size() else { return };
+    let size = size.to_logical::<f64>(scale);
+    let mode = app.state::<UiState>().0.lock().map(|m| *m).unwrap_or(UiMode::Bar);
+    let bar_h = BAR.min(size.height);
+    if let Some(c) = app.get_webview(COMMUNITY) {
+        let _ = c.set_position(LogicalPosition::new(0.0, 0.0));
+        let _ = c.set_size(LogicalSize::new(size.width, (size.height - bar_h).max(1.0)));
+    }
+    if let Some(ui) = app.get_webview(UI) {
+        match mode {
+            UiMode::Bar => {
+                let _ = ui.set_position(LogicalPosition::new(0.0, size.height - bar_h));
+                let _ = ui.set_size(LogicalSize::new(size.width, bar_h));
+            }
+            UiMode::Full => {
+                let _ = ui.set_position(LogicalPosition::new(0.0, 0.0));
+                let _ = ui.set_size(LogicalSize::new(size.width, size.height));
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn set_ui_mode(app: AppHandle, mode: String) -> Result<(), String> {
+    let m = match mode.as_str() {
+        "bar" => UiMode::Bar,
+        "full" => UiMode::Full,
+        _ => return Err("mode must be bar or full".into()),
+    };
+    *app.state::<UiState>().0.lock().map_err(|e| e.to_string())? = m;
+    let window = app.get_window("main").ok_or("main window missing")?;
+    layout(&app, &window);
+    Ok(())
+}
+
+#[tauri::command]
+fn community_navigate(app: AppHandle, url: String) -> Result<(), String> {
+    let u: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
+    if u.host_str() != Some(FORUM_HOST) {
+        return Err("only blizznux.com can be shown in the community view".into());
+    }
+    let c = app.get_webview(COMMUNITY).ok_or("community webview missing")?;
+    c.navigate(u).map_err(|e| e.to_string())
+}
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
@@ -197,14 +261,40 @@ fn read_log() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK's DMA-BUF renderer misbehaves on NVIDIA; must be set before any webview exists.
-    if std::path::Path::new("/proc/driver/nvidia").exists()
-        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
-    {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
+    // WebKitGTK renders with hardware acceleration by default. If the forum view shows
+    // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
+        .manage(UiState(Mutex::new(UiMode::Bar)))
+        .setup(|app| {
+            let window = WindowBuilder::new(app, "main")
+                .title("BlizzNux")
+                .inner_size(1180.0, 820.0)
+                .min_inner_size(900.0, 600.0)
+                .build()?;
+            let scale = window.scale_factor()?;
+            let size = window.inner_size()?.to_logical::<f64>(scale);
+            window.add_child(
+                WebviewBuilder::new(COMMUNITY, WebviewUrl::External(FORUM.parse().unwrap())),
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(size.width, (size.height - BAR).max(1.0)),
+            )?;
+            window.add_child(
+                WebviewBuilder::new(UI, WebviewUrl::App("index.html".into())),
+                LogicalPosition::new(0.0, size.height - BAR),
+                LogicalSize::new(size.width, BAR),
+            )?;
+            let handle = app.handle().clone();
+            let w = window.clone();
+            window.on_window_event(move |e| {
+                if let WindowEvent::Resized(_) = e {
+                    layout(&handle, &w);
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            set_ui_mode,
+            community_navigate,
             fetch_json,
             launch,
             doctor,

@@ -1,11 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the BlizzNux window",
+  "description": "Capabilities for the BlizzNux control bar webview",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default"
+  ],
+  "webviews": [
+    "ui"
   ]
 }
