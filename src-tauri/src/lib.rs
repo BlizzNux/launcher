@@ -232,6 +232,170 @@ async fn import_prefix(app: AppHandle, path: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
+#[derive(serde::Serialize)]
+struct Check {
+    name: String,
+    ok: bool,
+    detail: String,
+    hint: String,
+    blocking: bool,
+}
+
+fn on_path(bin: &str) -> bool {
+    std::env::var("PATH")
+        .map(|p| p.split(':').any(|d| PathBuf::from(d).join(bin).is_file()))
+        .unwrap_or(false)
+}
+
+/// True if the file is a 32-bit ELF (used to tell lib32 drivers from 64-bit ones).
+fn is_elf32(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = fs::File::open(path) else { return false };
+    let mut head = [0u8; 5];
+    f.read_exact(&mut head).is_ok() && &head[..4] == b"\x7fELF" && head[4] == 1
+}
+
+fn gpu_vendors() -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if let Ok(rd) = fs::read_dir("/sys/class/drm") {
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("card") || name.contains('-') {
+                continue;
+            }
+            if let Ok(id) = fs::read_to_string(e.path().join("device/vendor")) {
+                let tag = match id.trim() {
+                    "0x10de" => "nvidia",
+                    "0x1002" => "amd",
+                    "0x8086" => "intel",
+                    _ => continue,
+                };
+                if !v.contains(&tag) {
+                    v.push(tag);
+                }
+            }
+        }
+    }
+    v
+}
+
+fn distro_family() -> &'static str {
+    let text = fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let line = |k: &str| {
+        text.lines()
+            .find(|l| l.starts_with(k))
+            .map(|l| l[k.len()..].trim_matches('"').to_lowercase())
+            .unwrap_or_default()
+    };
+    let id = line("ID=");
+    let like = line("ID_LIKE=");
+    let s = format!("{id} {like}");
+    if s.contains("arch") {
+        "arch"
+    } else if s.contains("fedora") || s.contains("rhel") {
+        "fedora"
+    } else if s.contains("debian") || s.contains("ubuntu") {
+        "debian"
+    } else {
+        "other"
+    }
+}
+
+fn pkg_hint(vendor: &str, family: &str) -> String {
+    let (arch, fedora, debian) = match vendor {
+        "nvidia" => ("lib32-nvidia-utils", "nvidia-driver-libs.i686 (RPM Fusion)", "libnvidia-gl-<version>:i386"),
+        "amd" => ("lib32-vulkan-radeon", "mesa-vulkan-drivers.i686", "mesa-vulkan-drivers:i386"),
+        "intel" => ("lib32-vulkan-intel", "mesa-vulkan-drivers.i686", "mesa-vulkan-drivers:i386"),
+        _ => ("the 32-bit Vulkan driver for your GPU", "", ""),
+    };
+    match family {
+        "arch" => arch.to_string(),
+        "fedora" => fedora.to_string(),
+        "debian" => format!("{debian} (after `dpkg --add-architecture i386`)"),
+        _ => arch.to_string(),
+    }
+}
+
+#[tauri::command]
+fn readiness() -> Vec<Check> {
+    let family = distro_family();
+    let vendors = gpu_vendors();
+    let mut out = Vec::new();
+
+    let umu = on_path("umu-run");
+    out.push(Check {
+        name: "umu-launcher".into(),
+        ok: umu,
+        detail: if umu { "found".into() } else { "not found on this system".into() },
+        hint: match family {
+            "arch" => "sudo pacman -S umu-launcher".into(),
+            "fedora" => "enable the umu COPR, then sudo dnf install umu-launcher".into(),
+            _ => "install umu-launcher from https://github.com/Open-Wine-Components/umu-launcher/releases".into(),
+        },
+        blocking: true,
+    });
+
+    let curl = on_path("curl");
+    out.push(Check {
+        name: "curl".into(),
+        ok: curl,
+        detail: if curl { "found".into() } else { "needed to download the installer".into() },
+        hint: "install the curl package".into(),
+        blocking: true,
+    });
+
+    // 64-bit Vulkan: any ICD manifest at all.
+    let icd_dirs = ["/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d", "/usr/local/share/vulkan/icd.d"];
+    let mut icds: Vec<String> = Vec::new();
+    for d in icd_dirs {
+        if let Ok(rd) = fs::read_dir(d) {
+            for e in rd.flatten() {
+                icds.push(e.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    let vk64 = !icds.is_empty();
+    out.push(Check {
+        name: "Vulkan driver (64-bit)".into(),
+        ok: vk64,
+        detail: if vk64 { format!("{} driver manifest(s) found", icds.len()) } else { "no Vulkan driver manifests found".into() },
+        hint: "install your GPU's Vulkan driver (mesa / nvidia-utils)".into(),
+        blocking: true,
+    });
+
+    // 32-bit Vulkan: a Mesa i686 manifest, or a 32-bit NVIDIA GLX library.
+    let mesa32 = icds.iter().any(|n| n.contains("i686") || n.contains("i386"));
+    let nvidia32 = [
+        "/usr/lib32/libGLX_nvidia.so.0",
+        "/usr/lib/i386-linux-gnu/libGLX_nvidia.so.0",
+        "/usr/lib/libGLX_nvidia.so.0",
+    ]
+    .iter()
+    .any(|p| is_elf32(std::path::Path::new(p)));
+    let needs_nvidia32 = vendors.contains(&"nvidia");
+    let needs_mesa32 = vendors.iter().any(|v| *v == "amd" || *v == "intel");
+    let vk32 = (!needs_nvidia32 || nvidia32) && (!needs_mesa32 || mesa32) && (nvidia32 || mesa32);
+    let hint = vendors
+        .iter()
+        .filter(|v| match **v { "nvidia" => !nvidia32, _ => !mesa32 })
+        .map(|v| pkg_hint(v, family))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    out.push(Check {
+        name: "Vulkan driver (32-bit)".into(),
+        ok: vk32,
+        detail: if vk32 {
+            "found".into()
+        } else {
+            format!("missing for {} — Battle.net and older games need it", if vendors.is_empty() { "your GPU".into() } else { vendors.join(" + ") })
+        },
+        hint: if hint.is_empty() { pkg_hint("", family) } else { hint },
+        blocking: false,
+    });
+    out
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -296,6 +460,7 @@ pub fn run() {
             install_state,
             install,
             import_prefix,
+            readiness,
             app_version,
             open_external,
             read_log

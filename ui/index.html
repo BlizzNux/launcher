@@ -80,6 +80,7 @@
 
     <section id="panel-setup" class="panel-page">
       <h1>Set up Battle.net</h1>
+      <ul id="checks" class="checks"></ul>
       <p>Battle.net isn't installed in the launcher's prefix yet. Pick one:</p>
       <div class="choice">
         <div class="choice-text">
@@ -99,8 +100,7 @@
         <button id="do-import" class="flat">Use this prefix</button>
       </div>
       <p id="setup-status" class="muted"></p>
-      <p id="setup-umu" class="muted hidden">umu-launcher was not found on this system. Install the <code>umu-launcher</code>
-        package from your distribution first; the launcher needs it to run Proton.</p>
+      <pre id="setup-log" class="diag hidden"></pre>
     </section>
 
     <section id="panel-games" class="panel-page">

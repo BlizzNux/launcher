@@ -95,3 +95,13 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .choice-text input { margin-top: 4px; width: 100%; }
 code { background: #0a1120; padding: 1px 6px; border-radius: 6px; }
 button[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* ---- readiness checks ---- */
+.checks { list-style: none; padding: 0; margin: 0 0 16px; display: flex; flex-direction: column; gap: 6px; }
+.checks li { display: flex; gap: 10px; align-items: baseline; font-size: 14px; }
+.checks .mark { width: 1.4em; text-align: center; font-weight: 700; }
+.checks .ok .mark { color: #4cd38a; }
+.checks .bad .mark { color: var(--accent-2); }
+.checks .warn .mark { color: #ffc857; }
+.checks .hint { color: var(--muted); }
+.checks code { font-size: 13px; }
