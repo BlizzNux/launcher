@@ -89,7 +89,11 @@ async function startLogin() {
   }
 }
 
+let pollBusy = false;
+
 async function pollLogin() {
+  if (pollBusy || account.linked) return;   // one poll in flight; nothing to ask once linked
+  pollBusy = true;
   try {
     const r = await invoke("link_poll");
     if (r.status === "linked") {
@@ -104,6 +108,8 @@ async function pollLogin() {
   } catch (e) {
     stopPolling();
     console.error(e);
+  } finally {
+    pollBusy = false;
   }
 }
 
