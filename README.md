@@ -19,9 +19,10 @@ without Steam being installed.
 launches Battle.net. It is the engine for everything else and stays usable on its own.
 
 **v0.2 — desktop app (in development).** A Tauri 2 application in `src-tauri/` and `ui/`:
-Home with game tiles and the latest BlizzNux updates, a Community tab that is the BlizzNux
-forum itself, Settings for prefix, Proton, GPU offload and display scaling, and an update
-check against GitHub releases. Launching goes through the same script.
+Home with game tiles and the latest BlizzNux updates (read from the forum's API), a
+Community button that opens blizznux.com in your browser, Settings for prefix, Proton, GPU
+offload and display scaling, and an update check against GitHub releases. Launching goes
+through the same script.
 
 ### Building the desktop app
 

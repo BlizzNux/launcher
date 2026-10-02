@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the BlizzNux UI webview",
-  "windows": ["main"],
-  "webviews": ["ui"],
-  "permissions": ["core:default"]
+  "description": "Capabilities for the BlizzNux window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default"
+  ]
 }

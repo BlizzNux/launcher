@@ -24,9 +24,12 @@ async function launch(game) {
 }
 
 function showPage(name) {
-  document.querySelectorAll(".nav").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
+  document.querySelectorAll(".nav[data-page]").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
   document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === `page-${name}`));
-  invoke("community_visible", { visible: name === "community" }).catch(() => {});
+}
+
+function openForum(path = "") {
+  invoke("open_external", { url: `${FORUM}${path}` }).catch((e) => status(String(e), true));
 }
 
 function renderGames() {
@@ -90,12 +93,13 @@ async function saveConfig() {
 async function init() {
   const version = await invoke("app_version");
   $("#version").textContent = version;
-  document.querySelectorAll(".nav").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
+  document.querySelectorAll(".nav[data-page]").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
+  $("#nav-community").onclick = () => openForum();
   $("#launch-main").onclick = () => launch();
   $("#launch-side").onclick = () => launch();
   $("#news").addEventListener("click", (e) => {
     const li = e.target.closest("li[data-url]");
-    if (li) { invoke("community_navigate", { url: li.dataset.url }).then(() => showPage("community")).catch((err) => status(String(err), true)); }
+    if (li) openForum(li.dataset.url.slice(FORUM.length));
   });
   $("#cfg-save").onclick = saveConfig;
   $("#dpi-apply").onclick = async () => {

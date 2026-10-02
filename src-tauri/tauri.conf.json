@@ -8,14 +8,28 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [],
+    "windows": [
+      {
+        "label": "main",
+        "title": "BlizzNux",
+        "url": "index.html",
+        "width": 1120,
+        "height": 740,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
     "security": {
       "csp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["appimage", "deb", "rpm"],
+    "targets": [
+      "appimage",
+      "deb",
+      "rpm"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -25,10 +39,20 @@
     "category": "Game",
     "shortDescription": "Battle.net games on Linux through Proton, no Steam needed",
     "longDescription": "BlizzNux installs, imports and launches Battle.net through Proton via umu-launcher, with the latest BlizzNux updates and the community forum built in. Not affiliated with Blizzard Entertainment.",
-    "resources": ["../bin/blizznux-run"],
+    "resources": [
+      "../bin/blizznux-run"
+    ],
     "linux": {
-      "deb": { "depends": ["umu-launcher"] },
-      "rpm": { "depends": ["umu-launcher"] }
+      "deb": {
+        "depends": [
+          "umu-launcher"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "umu-launcher"
+        ]
+      }
     }
   }
 }

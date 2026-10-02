@@ -3,14 +3,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use tauri::webview::WebviewBuilder;
-use tauri::window::WindowBuilder;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent};
+use tauri::{AppHandle, Manager};
 
-const SIDEBAR: f64 = 232.0;
-const UI: &str = "ui";
-const COMMUNITY: &str = "community";
-const FORUM: &str = "https://blizznux.com/";
 const FORUM_HOST: &str = "blizznux.com";
 
 fn home() -> PathBuf {
@@ -58,36 +52,6 @@ fn script_path(app: &AppHandle) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn layout(app: &AppHandle, window: &tauri::Window) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let Ok(size) = window.inner_size() else { return };
-    let size = size.to_logical::<f64>(scale);
-    if let Some(ui) = app.get_webview(UI) {
-        let _ = ui.set_position(LogicalPosition::new(0.0, 0.0));
-        let _ = ui.set_size(LogicalSize::new(size.width, size.height));
-    }
-    if let Some(c) = app.get_webview(COMMUNITY) {
-        let _ = c.set_position(LogicalPosition::new(SIDEBAR, 0.0));
-        let _ = c.set_size(LogicalSize::new((size.width - SIDEBAR).max(1.0), size.height));
-    }
-}
-
-#[tauri::command]
-fn community_visible(app: AppHandle, visible: bool) -> Result<(), String> {
-    let c = app.get_webview(COMMUNITY).ok_or("community webview missing")?;
-    if visible { c.show() } else { c.hide() }.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn community_navigate(app: AppHandle, url: String) -> Result<(), String> {
-    let u: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
-    if u.host_str() != Some(FORUM_HOST) {
-        return Err("only blizznux.com links open in the community tab".into());
-    }
-    let c = app.get_webview(COMMUNITY).ok_or("community webview missing")?;
-    c.navigate(u).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -240,37 +204,7 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
     tauri::Builder::default()
-        .setup(|app| {
-            let window = WindowBuilder::new(app, "main")
-                .title("BlizzNux")
-                .inner_size(1120.0, 740.0)
-                .min_inner_size(900.0, 600.0)
-                .build()?;
-            let scale = window.scale_factor()?;
-            let size = window.inner_size()?.to_logical::<f64>(scale);
-            window.add_child(
-                WebviewBuilder::new(UI, WebviewUrl::App("index.html".into())),
-                LogicalPosition::new(0.0, 0.0),
-                LogicalSize::new(size.width, size.height),
-            )?;
-            let community = window.add_child(
-                WebviewBuilder::new(COMMUNITY, WebviewUrl::External(FORUM.parse().unwrap())),
-                LogicalPosition::new(SIDEBAR, 0.0),
-                LogicalSize::new((size.width - SIDEBAR).max(1.0), size.height),
-            )?;
-            community.hide()?;
-            let handle = app.handle().clone();
-            let w = window.clone();
-            window.on_window_event(move |e| {
-                if let WindowEvent::Resized(_) = e {
-                    layout(&handle, &w);
-                }
-            });
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
-            community_visible,
-            community_navigate,
             fetch_json,
             launch,
             doctor,
