@@ -491,47 +491,6 @@ pub fn auto_bug_report(app: &AppHandle, comment: String) {
     });
 }
 
-/// Exchange the one-time code shown on blizznux.com/launcher/link for a launcher token.
-#[tauri::command]
-pub async fn link_account(code: String) -> Result<AccountStatus, String> {
-    let code: String = code.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-    if code.len() < 6 || code.len() > 12 {
-        return Err("enter the code shown on blizznux.com".into());
-    }
-    let client = reqwest::Client::builder()
-        .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .post(link_url())
-        .json(&serde_json::json!({ "code": code, "install_id": install_id(), "launcher_version": env!("CARGO_PKG_VERSION") }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
-    if status.as_u16() == 429 {
-        return Err("too many attempts; wait a minute and try again".into());
-    }
-    if !status.is_success() {
-        return Err(body["error"].as_str().unwrap_or("the code was not accepted").to_string());
-    }
-    let token = body["token"].as_str().unwrap_or("").trim().to_string();
-    let username = body["username"].as_str().unwrap_or("").trim().to_string();
-    if token.len() < 16 || token.len() > 512 || !token.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
-        return Err("the site returned an invalid token".into());
-    }
-    if username.is_empty() || username.len() > 64 {
-        return Err("the site returned no username".into());
-    }
-    let mut c = load_config();
-    c.insert("USER_TOKEN".into(), token);
-    c.insert("USERNAME".into(), username);
-    save_config(&c)?;
-    Ok(account_status())
-}
-
 #[tauri::command]
 pub fn unlink_account() -> Result<AccountStatus, String> {
     let mut c = load_config();

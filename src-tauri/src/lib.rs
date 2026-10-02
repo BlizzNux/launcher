@@ -703,7 +703,6 @@ pub fn run() {
             reports::build_report,
             reports::send_report,
             reports::account_status,
-            reports::link_account,
             reports::link_start,
             reports::link_poll,
             reports::link_cancel,
