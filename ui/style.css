@@ -7,6 +7,18 @@
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
   font: 15px/1.45 system-ui, "Noto Sans", sans-serif; overflow: hidden; }
 body { display: flex; flex-direction: column; }
+
+/* ---- custom title bar (matches the site header) ---- */
+#titlebar { flex: none; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 6px 0 14px;
+  background: #0b1324; border-bottom: 1px solid #1a2745; user-select: none; }
+#titlebar img { width: 22px; height: 22px; border-radius: 6px; }
+#titlebar .title { font-weight: 700; font-size: 14px; flex: 1; }
+#titlebar .ver { font-weight: 400; color: var(--muted); margin-left: 6px; font-size: 13px; }
+#titlebar .win { display: flex; }
+#titlebar .win button { background: none; border: 0; color: var(--muted); width: 40px; height: 32px; border-radius: 6px;
+  font-size: 14px; cursor: pointer; }
+#titlebar .win button:hover { background: var(--panel-2); color: var(--text); }
+#titlebar .win button.x:hover { background: #c0392b; color: #fff; }
 #site { flex: 1; width: 100%; border: 0; background: #fff; }
 .hidden { display: none !important; }
 .muted { color: var(--muted); }

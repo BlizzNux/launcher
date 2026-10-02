@@ -7,6 +7,17 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Custom title bar, styled like the site header -->
+  <header id="titlebar" data-tauri-drag-region>
+    <img src="logo.png" alt="" data-tauri-drag-region>
+    <span class="title" data-tauri-drag-region>BlizzNux Launcher <span id="title-version" class="ver"></span></span>
+    <div class="win">
+      <button id="win-min" title="Minimize" aria-label="Minimize">&#x2013;</button>
+      <button id="win-max" title="Maximize" aria-label="Maximize">&#x25A1;</button>
+      <button id="win-close" class="x" title="Close" aria-label="Close">&#x2715;</button>
+    </div>
+  </header>
+
   <iframe id="site" src="https://blizznux.com/" title="BlizzNux.com" referrerpolicy="no-referrer-when-downgrade"></iframe>
 
   <!-- Bottom control bar -->

@@ -205,6 +205,7 @@ pub fn run() {
             // third-party cookies by default, which would log the user out of the forum on
             // every visit, so allow cookies for the embedded site.
             if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_title(&format!("BlizzNux Launcher v{}", env!("CARGO_PKG_VERSION")));
                 let _ = main.with_webview(|platform| {
                     #[cfg(target_os = "linux")]
                     {

@@ -71,9 +71,19 @@ async function saveConfig() {
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
 }
 
+function initTitlebar() {
+  const win = window.__TAURI__.window.getCurrentWindow();
+  $("#win-min").onclick = () => win.minimize();
+  $("#win-max").onclick = () => win.toggleMaximize();
+  $("#win-close").onclick = () => win.close();
+  $("#titlebar").addEventListener("dblclick", (e) => { if (!e.target.closest("button")) win.toggleMaximize(); });
+}
+
 async function init() {
   const version = await invoke("app_version");
   $("#version").textContent = version;
+  $("#title-version").textContent = `v${version}`;
+  initTitlebar();
   $("#games").innerHTML = GAMES.map(([code, name]) =>
     `<button class="tile" data-game="${code}"><span class="name">${name}</span><span class="code">${code}</span></button>`).join("");
   $("#games").addEventListener("click", (e) => {
