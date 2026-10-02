@@ -28,6 +28,7 @@
     <span id="status" class="status"></span>
     <div class="spacer"></div>
     <button id="update" class="update hidden">Update available</button>
+    <button id="open-addons" class="flat">Addons</button>
     <button id="open-settings" class="flat">Settings</button>
     <button id="open-disclaimer" class="flat">Disclaimer</button>
   </div>
@@ -101,6 +102,25 @@
       </div>
       <p id="setup-status" class="muted"></p>
       <pre id="setup-log" class="diag hidden"></pre>
+    </section>
+
+    <section id="panel-addons" class="panel-page">
+      <h1>World of Warcraft addons</h1>
+      <div id="addons-none" class="muted hidden">World of Warcraft wasn't found in the Battle.net prefix. Install it through Battle.net first, then come back here.</div>
+      <div id="addons-ui" class="hidden">
+        <div class="row" id="flavors"></div>
+        <div class="row" style="margin-top:12px">
+          <button id="addons-open">Open AddOns folder</button>
+          <label class="filebtn">Install from ZIP…<input id="addon-zip" type="file" accept=".zip" hidden></label>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input id="addon-url" placeholder="Install from link: a .zip URL or a GitHub repository" style="flex:1; min-width: 280px">
+          <button id="addon-url-go">Install</button>
+        </div>
+        <p id="addons-status" class="muted"></p>
+        <h2>Installed</h2>
+        <ul id="addon-list" class="addons"></ul>
+      </div>
     </section>
 
     <section id="panel-games" class="panel-page">

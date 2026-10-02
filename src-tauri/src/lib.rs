@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Manager};
 
+mod addons;
+
 const FORUM_HOST: &str = "blizznux.com";
 
-fn home() -> PathBuf {
+pub(crate) fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
 }
 
@@ -130,8 +132,7 @@ async fn set_dpi(app: AppHandle, dpi: u32) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-fn read_config() -> BTreeMap<String, String> {
+pub(crate) fn load_config() -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
@@ -146,8 +147,13 @@ fn read_config() -> BTreeMap<String, String> {
 }
 
 #[tauri::command]
+fn read_config() -> BTreeMap<String, String> {
+    load_config()
+}
+
+#[tauri::command]
 fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
-    let mut current = read_config();
+    let mut current = load_config();
     for (k, v) in values {
         if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD") {
             current.insert(k, v.trim().to_string());
@@ -168,8 +174,8 @@ fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
 
 const LAUNCHER_REL: &str = "drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe";
 
-fn current_prefix() -> PathBuf {
-    let cfg = read_config();
+pub(crate) fn current_prefix() -> PathBuf {
+    let cfg = load_config();
     match cfg.get("PREFIX").filter(|p| !p.is_empty()) {
         Some(p) => PathBuf::from(p),
         None => {
@@ -579,6 +585,12 @@ pub fn run() {
             readiness,
             fix_plan,
             fix_apply,
+            addons::wow_installs,
+            addons::list_addons,
+            addons::remove_addon,
+            addons::open_addons_folder,
+            addons::install_addon_bytes,
+            addons::install_addon_url,
             app_version,
             open_external,
             read_log

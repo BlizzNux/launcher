@@ -61,6 +61,60 @@ function offerFix(name, steps) {
   };
 }
 
+// ---- WoW addons ----
+let wow = { installs: [], current: null };
+
+function addonsStatus(msg, err = false) { const el = $("#addons-status"); el.textContent = msg; el.style.color = err ? "var(--accent-2)" : ""; }
+
+async function loadAddons() {
+  try { wow.installs = await invoke("wow_installs"); } catch (e) { addonsStatus(String(e), true); return; }
+  const none = wow.installs.length === 0;
+  $("#addons-none").classList.toggle("hidden", !none);
+  $("#addons-ui").classList.toggle("hidden", none);
+  if (none) return;
+  if (!wow.current || !wow.installs.some((w) => w.flavor === wow.current.flavor)) wow.current = wow.installs[0];
+  $("#flavors").innerHTML = wow.installs.map((w) => `<button class="flavor${w.flavor === wow.current.flavor ? " active" : ""}" data-flavor="${w.flavor}">${esc(w.label)}</button>`).join("");
+  $("#flavors").querySelectorAll(".flavor").forEach((b) => { b.onclick = () => { wow.current = wow.installs.find((w) => w.flavor === b.dataset.flavor); loadAddons(); }; });
+  await refreshAddonList();
+}
+
+async function refreshAddonList() {
+  try {
+    const list = await invoke("list_addons", { addonsDir: wow.current.addons_dir });
+    $("#addon-list").innerHTML = list.length
+      ? list.map((ad) => `<li><span class="t">${esc(ad.title)}<div class="v">${esc(ad.folder)}${ad.version ? " · " + esc(ad.version) : ""}</div></span><button class="rm" data-folder="${esc(ad.folder)}">Remove</button></li>`).join("")
+      : `<li class="muted" style="background:none;border:0">No addons installed for ${esc(wow.current.label)}.</li>`;
+    $("#addon-list").querySelectorAll(".rm").forEach((b) => { b.onclick = async () => {
+      if (!confirm(`Remove ${b.dataset.folder}?`)) return;
+      try { await invoke("remove_addon", { addonsDir: wow.current.addons_dir, folder: b.dataset.folder }); addonsStatus(`Removed ${b.dataset.folder}.`); }
+      catch (e) { addonsStatus(String(e), true); }
+      refreshAddonList();
+    }; });
+  } catch (e) { addonsStatus(String(e), true); }
+}
+
+async function installZipFile(file) {
+  addonsStatus(`Installing ${file.name}…`);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const folders = await invoke("install_addon_bytes", bytes, { headers: { "x-addons-dir": wow.current.addons_dir } });
+    addonsStatus(`Installed: ${folders.join(", ")}`);
+  } catch (e) { addonsStatus(String(e), true); }
+  refreshAddonList();
+}
+
+async function installFromUrl() {
+  const url = $("#addon-url").value.trim();
+  if (!url) return;
+  addonsStatus("Downloading…");
+  try {
+    const folders = await invoke("install_addon_url", { addonsDir: wow.current.addons_dir, flavor: wow.current.flavor, url });
+    addonsStatus(`Installed: ${folders.join(", ")}`);
+    $("#addon-url").value = "";
+  } catch (e) { addonsStatus(String(e), true); }
+  refreshAddonList();
+}
+
 function showLog(on) {
   const el = $("#setup-log");
   clearInterval(logTimer);
@@ -98,7 +152,8 @@ async function launch(game) {
 
 async function showPanel(name) {
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer", setup: "Set up Battle.net" }[name] || "";
+  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons" }[name] || "";
+  if (name === "addons") loadAddons();
   $("#panel").classList.remove("hidden");
 }
 
@@ -165,6 +220,11 @@ async function init() {
   $("#home").onclick = () => { $("#site").src = FORUM; };
   $("#panel").addEventListener("click", (e) => { if (e.target === $("#panel")) hidePanel(); });
   $("#open-settings").onclick = () => showPanel("settings");
+  $("#open-addons").onclick = () => showPanel("addons");
+  $("#addons-open").onclick = () => invoke("open_addons_folder", { addonsDir: wow.current.addons_dir }).catch((e) => addonsStatus(String(e), true));
+  $("#addon-zip").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) installZipFile(f); e.target.value = ""; });
+  $("#addon-url-go").onclick = installFromUrl;
+  $("#addon-url").addEventListener("keydown", (e) => { if (e.key === "Enter") installFromUrl(); });
   $("#open-disclaimer").onclick = () => showPanel("disclaimer");
   $("#close").onclick = hidePanel;
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#panel").classList.contains("hidden")) hidePanel(); });
