@@ -85,8 +85,8 @@ async function startLogin() {
   showPanel("login");
   try {
     const s = await invoke("link_start");
-    await invoke("login_open", { url: s.url });
-    $("#login-status").textContent = "Waiting for you to log in in the BlizzNux window…";
+    $("#site").src = s.url;
+    $("#login-status").textContent = "Waiting for you to log in above…";
     pollTimer = setInterval(pollLogin, 2000);
   } catch (e) {
     $("#login-status").textContent = `Could not start: ${e}`;
@@ -96,11 +96,9 @@ async function startLogin() {
 
 async function pollLogin() {
   try {
-    try { await invoke("login_approve_tick"); } catch (e) { console.error(e); }
     const r = await invoke("link_poll");
     if (r.status === "linked") {
       stopPolling();
-      invoke("login_close").catch(() => {});
       await refreshAccount();
       $("#login-name").textContent = r.username;
       $("#opt-share").checked = account.sharing; $("#opt-bug").checked = account.bug_auto;
@@ -108,8 +106,7 @@ async function pollLogin() {
       $("#site").src = FORUM; // reload the forum: the login is shared with the embedded view
     } else if (r.status === "expired" || r.status === "none") {
       stopPolling();
-      invoke("login_close").catch(() => {});
-      $("#login-status").textContent = "The login window expired.";
+      $("#login-status").textContent = "The login attempt expired.";
       $("#login-retry").classList.remove("hidden");
     }
   } catch (e) {
@@ -437,7 +434,7 @@ async function init() {
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
   $("#acct-link").onclick = startLogin;
   $("#login-retry").onclick = startLogin;
-  $("#login-later").onclick = () => { stopPolling(); invoke("link_cancel").catch(() => {}); invoke("login_close").catch(() => {}); hidePanel(); };
+  $("#login-later").onclick = () => { stopPolling(); invoke("link_cancel").catch(() => {}); $("#site").src = FORUM; hidePanel(); };
   $("#login-finish").onclick = finishLogin;
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };

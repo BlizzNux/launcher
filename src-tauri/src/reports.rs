@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{current_prefix, home, load_config, save_config};
 
@@ -43,7 +43,7 @@ pub struct LinkStart {
 
 /// Register a pairing with the site and return the login page URL to open.
 #[tauri::command]
-pub async fn link_start() -> Result<LinkStart, String> {
+pub async fn link_start(app: AppHandle) -> Result<LinkStart, String> {
     let resp = http()?
         .post(format!("{}/start", link_url()))
         .json(&serde_json::json!({ "install_id": install_id(), "launcher_version": env!("CARGO_PKG_VERSION"), "distro": os_release("PRETTY_NAME") }))
@@ -61,66 +61,49 @@ pub async fn link_start() -> Result<LinkStart, String> {
         return Err("the site returned an invalid pairing".into());
     }
     let expires_in = body["expires_in"].as_u64().unwrap_or(600);
+    set_pair_cookie(&app, Some(pair_id.clone()))?;
     *PAIRING.lock().map_err(|e| e.to_string())? = Some(Pairing { pair_id, pair_secret, started: Instant::now() });
-    // The page gets no pairing parameter: approval is triggered by the launcher itself
-    // from inside its own login window, so a crafted link can never approve a pairing.
+    // The page gets no pairing parameter and no secret: it learns the pairing only from the
+    // cookie above, which exists only in this launcher's own cookie store.
     let page = std::env::var("BLIZZNUX_LINK_PAGE").unwrap_or_else(|_| LINK_PAGE.to_string());
     Ok(LinkStart { url: page, expires_in })
 }
 
-const LOGIN_WINDOW: &str = "login";
+const PAIR_COOKIE: &str = "bz_pair";
 
-/// Open blizznux.com's login page as the top-level document of a dedicated window, so the
-/// launcher can run script in it (impossible in the cross-origin frame of the main window).
-#[tauri::command]
-pub fn login_open(app: AppHandle, url: String) -> Result<(), String> {
-    let u: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
-    let allowed = std::env::var("BLIZZNUX_LINK_PAGE").ok().and_then(|p| p.parse::<url::Url>().ok()).and_then(|p| p.host_str().map(String::from));
-    if u.host_str() != Some("blizznux.com") && u.host_str().map(String::from) != allowed {
-        return Err("login window only opens blizznux.com".into());
-    }
-    if let Some(w) = app.get_webview_window(LOGIN_WINDOW) {
-        let _ = w.set_focus();
-        return Ok(());
-    }
-    WebviewWindowBuilder::new(&app, LOGIN_WINDOW, WebviewUrl::External(u))
-        .title("Log in with BlizzNux.com")
-        .inner_size(560.0, 720.0)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+fn site_host() -> String {
+    std::env::var("BLIZZNUX_LINK_PAGE")
+        .ok()
+        .and_then(|p| p.parse::<url::Url>().ok())
+        .and_then(|u| u.host_str().map(String::from))
+        .unwrap_or_else(|| "blizznux.com".into())
 }
 
-#[tauri::command]
-pub fn login_close(app: AppHandle) {
-    if let Some(w) = app.get_webview_window(LOGIN_WINDOW) {
-        let _ = w.close();
-    }
-}
-
-/// Run the approval step inside the login window: once Flarum reports a logged-in user,
-/// POST the pairing id to /link/approve with the page's own session and CSRF token.
-#[tauri::command]
-pub fn login_approve_tick(app: AppHandle) -> Result<bool, String> {
-    let pair_id = { PAIRING.lock().map_err(|e| e.to_string())?.as_ref().map(|p| p.pair_id.clone()) };
-    let Some(pair_id) = pair_id else { return Ok(false) };
-    let Some(w) = app.get_webview_window(LOGIN_WINDOW) else { return Ok(false) };
-    if !pair_id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
-        return Err("invalid pairing id".into());
-    }
-    let script = format!(r#"(function () {{
-  if (window.__bzApproved) return;
-  if (!(window.app && app.session && app.session.user)) return;
-  window.__bzApproved = true;
-  fetch("/api/launcher/link/approve", {{
-    method: "POST", credentials: "same-origin",
-    headers: {{ "Content-Type": "application/json", "X-CSRF-Token": app.session.csrfToken }},
-    body: JSON.stringify({{ pair_id: "{pair_id}" }})
-  }}).then(function (r) {{ if (!r.ok) window.__bzApproved = false; }}).catch(function () {{ window.__bzApproved = false; }});
-}})();"#);
-    w.eval(&script).map_err(|e| e.to_string())?;
-    Ok(true)
+/// Put the pairing id in the launcher's own cookie store for the site (HttpOnly, Secure,
+/// SameSite=None so the embedded site sends it). Only this launcher can set it, so the site
+/// can trust it when a logged-in page asks to approve; a crafted link cannot plant it.
+fn set_pair_cookie(app: &AppHandle, value: Option<String>) -> Result<(), String> {
+    let main = app.get_webview_window("main").ok_or("main window missing")?;
+    let host = site_host();
+    main.with_webview(move |platform| {
+        #[cfg(target_os = "linux")]
+        {
+            use webkit2gtk::{CookieManagerExt, WebContextExt, WebViewExt};
+            let Some(ctx) = platform.inner().context() else { return };
+            let Some(cm) = ctx.cookie_manager() else { return };
+            let (val, max_age) = match value { Some(v) => (v, 600), None => (String::new(), 0) };
+            let mut cookie = soup::Cookie::new(PAIR_COOKIE, &val, &host, "/", max_age);
+            cookie.set_secure(true);
+            cookie.set_http_only(true);
+            cookie.set_same_site_policy(soup::SameSitePolicy::None);
+            if max_age == 0 {
+                cm.delete_cookie(&mut cookie, None::<&webkit2gtk::gio::Cancellable>, |_| {});
+            } else {
+                cm.add_cookie(&mut cookie, None::<&webkit2gtk::gio::Cancellable>, |_| {});
+            }
+        }
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -131,7 +114,7 @@ pub struct LinkPoll {
 
 /// Ask the site whether the user has finished logging in; stores the token when they have.
 #[tauri::command]
-pub async fn link_poll() -> Result<LinkPoll, String> {
+pub async fn link_poll(app: AppHandle) -> Result<LinkPoll, String> {
     let (pair_id, pair_secret, age) = {
         let g = PAIRING.lock().map_err(|e| e.to_string())?;
         let Some(p) = g.as_ref() else { return Ok(LinkPoll { status: "none".into(), username: String::new() }) };
@@ -162,6 +145,7 @@ pub async fn link_poll() -> Result<LinkPoll, String> {
             c.insert("USERNAME".into(), username.clone());
             save_config(&c)?;
             *PAIRING.lock().map_err(|e| e.to_string())? = None;
+            let _ = set_pair_cookie(&app, None);
             Ok(LinkPoll { status: "linked".into(), username })
         }
         410 => {
@@ -173,10 +157,11 @@ pub async fn link_poll() -> Result<LinkPoll, String> {
 }
 
 #[tauri::command]
-pub fn link_cancel() {
+pub fn link_cancel(app: AppHandle) {
     if let Ok(mut g) = PAIRING.lock() {
         *g = None;
     }
+    let _ = set_pair_cookie(&app, None);
 }
 
 pub fn report_url() -> String {

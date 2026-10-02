@@ -593,34 +593,6 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
             Err(e) => { eprintln!("error: {e}"); return 1; }
         },
         "readiness" => serde_json::to_string_pretty(&readiness()),
-        "link-start" => match tauri::async_runtime::block_on(reports::link_start()) {
-            Ok(v) => serde_json::to_string_pretty(&v),
-            Err(e) => { eprintln!("error: {e}"); return 1; }
-        },
-        "link-poll" => match tauri::async_runtime::block_on(reports::link_poll()) {
-            Ok(v) => serde_json::to_string_pretty(&v),
-            Err(e) => { eprintln!("error: {e}"); return 1; }
-        },
-        // start a pairing and poll until linked/expired (test aid; one process keeps the secret)
-        "link-test" => {
-            let rc = tauri::async_runtime::block_on(async {
-                let st = match reports::link_start().await { Ok(v) => v, Err(e) => { eprintln!("start error: {e}"); return 1; } };
-                println!("{}", serde_json::to_string(&st).unwrap_or_default());
-                for _ in 0..20 {
-                    match reports::link_poll().await {
-                        Ok(r) => {
-                            let v = serde_json::to_value(&r).unwrap_or_default();
-                            println!("{v}");
-                            if v["status"] != "pending" { return 0; }
-                        }
-                        Err(e) => { eprintln!("poll error: {e}"); return 1; }
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-                0
-            });
-            return rc;
-        }
         "battlenet-update" => match tauri::async_runtime::block_on(updates::battlenet_update_check()) {
             Ok(v) => serde_json::to_string_pretty(&v),
             Err(e) => { eprintln!("error: {e}"); return 1; }
@@ -717,9 +689,6 @@ pub fn run() {
             reports::link_start,
             reports::link_poll,
             reports::link_cancel,
-            reports::login_open,
-            reports::login_close,
-            reports::login_approve_tick,
             reports::unlink_account,
             updates::update_check,
             updates::update_install,
