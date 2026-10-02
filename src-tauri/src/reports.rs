@@ -219,8 +219,8 @@ fn pe_product_version(path: &Path) -> Option<String> {
 
 #[derive(serde::Serialize, Clone)]
 pub struct BattlenetInfo {
-    build: String,
-    version: String,
+    pub build: String,
+    pub version: String,
 }
 
 pub fn battlenet_info() -> BattlenetInfo {

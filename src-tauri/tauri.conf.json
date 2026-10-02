@@ -54,6 +54,15 @@
           "umu-launcher"
         ]
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDQTJCRjUzNUEwNzE2QzAKUldUQUZnZGFVNytpL0tOUVhGa3c2dVo2L2VVamczeloxQU1OYzBFb1FzbStTOXV1bnBHdjFwaGYK",
+      "endpoints": [
+        "https://github.com/BlizzNux/launcher/releases/latest/download/latest.json"
+      ]
     }
   }
 }

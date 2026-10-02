@@ -257,16 +257,47 @@ function newerVersion(latest, current) {
 }
 
 async function checkUpdate(current) {
+  const b = $("#update");
+  // 1. Signed in-app update (AppImage builds): downloads, verifies and restarts.
+  try {
+    const u = await invoke("update_check");
+    if (u.available) {
+      b.textContent = u.can_install ? `Update to v${u.version}` : `Update v${u.version}`;
+      b.title = u.can_install ? `You have v${current}. Click to download, verify and restart.` : `You have v${current}. Opens the release page in your browser.`;
+      b.onclick = u.can_install ? installUpdate : () => invoke("open_external", { url: u.url });
+      b.classList.remove("hidden");
+      return;
+    }
+    return; // reachable and up to date
+  } catch { /* no update manifest yet, or offline: fall back to the release list */ }
+  // 2. Fallback: compare with the latest GitHub release and open its page.
   try {
     const rel = await invoke("fetch_json", { url: RELEASES });
     if (rel.tag_name && newerVersion(rel.tag_name, current)) {
-      const b = $("#update");
       b.textContent = `Update ${rel.tag_name}`;
       b.title = `You have v${current}. Opens the release page in your browser.`;
       b.onclick = () => invoke("open_external", { url: rel.html_url });
       b.classList.remove("hidden");
     }
   } catch { /* offline or rate-limited: stay quiet */ }
+}
+
+async function installUpdate() {
+  const b = $("#update");
+  b.disabled = true; b.textContent = "Downloading…";
+  const un = await window.__TAURI__.event.listen("update-progress", (e) => {
+    const p = e.payload || {}; if (p.total) b.textContent = `Downloading ${Math.round(p.downloaded * 100 / p.total)}%`;
+  });
+  try { await invoke("update_install"); }
+  catch (e) { status(`Update failed: ${e}`, true); b.disabled = false; b.textContent = "Update"; }
+  un();
+}
+
+async function checkBattlenet() {
+  try {
+    const r = await invoke("battlenet_update_check");
+    if (r.available) status(`Battle.net ${r.latest} is out (you have ${r.installed}). Launch Battle.net and it updates itself.`);
+  } catch { /* offline: stay quiet */ }
 }
 
 async function loadConfig() {
@@ -364,6 +395,7 @@ async function init() {
   loadConfig();
   refreshState(true);
   checkUpdate(version);
+  checkBattlenet();
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
 }
 

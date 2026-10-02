@@ -7,6 +7,7 @@ use tauri::{AppHandle, Manager};
 
 mod addons;
 mod reports;
+mod updates;
 
 const FORUM_HOST: &str = "blizznux.com";
 
@@ -585,6 +586,10 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
             Err(e) => { eprintln!("error: {e}"); return 1; }
         },
         "readiness" => serde_json::to_string_pretty(&readiness()),
+        "battlenet-update" => match tauri::async_runtime::block_on(updates::battlenet_update_check()) {
+            Ok(v) => serde_json::to_string_pretty(&v),
+            Err(e) => { eprintln!("error: {e}"); return 1; }
+        },
         "report-bug" | "report-run" => {
             let kind = if cmd == "report-bug" { "bug" } else { "run" };
             let game = _rest.first().cloned();
@@ -616,6 +621,7 @@ pub fn run() {
     // WebKitGTK renders with hardware acceleration by default. If the forum view shows
     // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // blizznux.com is shown in a frame inside our own page. WebKitGTK refuses
             // third-party cookies by default, which would log the user out of the forum on
@@ -661,6 +667,9 @@ pub fn run() {
             addons::wowup_remove,
             reports::build_report,
             reports::send_report,
+            updates::update_check,
+            updates::update_install,
+            updates::battlenet_update_check,
             app_version,
             open_external,
             read_log
