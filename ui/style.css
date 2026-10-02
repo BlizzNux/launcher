@@ -134,6 +134,5 @@ textarea:focus { outline: none; border-color: var(--accent); }
 #report-preview { margin-top: 8px; max-height: 30vh; }
 .steps { margin: 0 0 14px; padding-left: 1.3em; }
 .steps li { margin: 4px 0; }
-#panel.sheet { align-items: flex-end; padding-bottom: 76px; }
 .notice { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); background: var(--panel-2);
   border: 1px solid var(--accent); border-radius: 8px; padding: 4px 8px 4px 10px; white-space: nowrap; }
