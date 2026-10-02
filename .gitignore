@@ -3,3 +3,5 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 .cache/
+flatpak/.build/
+flatpak/.flatpak-builder/

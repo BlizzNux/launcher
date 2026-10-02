@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.blizznux.launcher</id>
+  <name>BlizzNux</name>
+  <summary>Battle.net games on Linux through Proton, no Steam needed</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="com.blizznux"><name>BlizzNux</name></developer>
+  <description>
+    <p>BlizzNux installs, imports and launches Battle.net through Proton via umu-launcher, with the BlizzNux community built in. Not affiliated with Blizzard Entertainment.</p>
+  </description>
+  <launchable type="desktop-id">com.blizznux.launcher.desktop</launchable>
+  <url type="homepage">https://blizznux.com</url>
+  <url type="bugtracker">https://github.com/BlizzNux/launcher/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases><release version="0.2.0" date="2026-10-02" /></releases>
+</component>

@@ -1,0 +1,95 @@
+# BlizzNux launcher — Flatpak manifest (local / experimental build).
+# Bundles umu-launcher so no distro package is needed; the 32-bit GPU driver comes from the
+# Flatpak GL32 extension matching the host driver. Build with ./flatpak/build.sh.
+app-id: com.blizznux.launcher
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: blizznux
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=all
+  - --allow=multiarch
+  - --allow=devel
+  - --allow=bluetooth
+  - --filesystem=home
+  - --filesystem=xdg-run/gamescope-0:ro
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.ScreenSaver
+  - --talk-name=org.freedesktop.portal.Flatpak
+  - --env=PATH=/app/bin:/usr/bin
+  - --env=XDG_DATA_DIRS=/app/share:/usr/share:/usr/lib/extensions/vulkan/share
+  - --system-talk-name=org.freedesktop.UPower
+# 32-bit userland for Proton/Wine, same extension points Steam and Lutris use.
+add-extensions:
+  org.freedesktop.Platform.Compat.i386:
+    directory: lib/i386-linux-gnu
+    version: '24.08'
+  org.freedesktop.Platform.Compat.i386.Debug:
+    directory: lib/debug/lib/i386-linux-gnu
+    version: '24.08'
+    no-autodownload: true
+  org.freedesktop.Platform.GL32:
+    directory: lib/i386-linux-gnu/GL
+    version: '1.4'
+    versions: 24.08;1.4
+    subdirectories: true
+    no-autodownload: true
+    autodelete: false
+    add-ld-path: lib
+    merge-dirs: vulkan/icd.d;glvnd/egl_vendor.d;OpenCL/vendors;lib/dri;lib/d3d;vulkan/explicit_layer.d;vulkan/implicit_layer.d
+    download-if: active-gl-driver
+    enable-if: active-gl-driver
+cleanup-commands:
+  - mkdir -p /app/lib/i386-linux-gnu /app/lib/i386-linux-gnu/GL /app/lib/debug/lib/i386-linux-gnu
+modules:
+  - name: umu-launcher
+    buildsystem: simple
+    build-commands:
+      - tar -xf umu-zipapp.tar
+      - install -Dm755 umu/umu-run /app/bin/umu-run
+      - install -Dm755 umu/umu_run.py /app/bin/umu_run.py
+    sources:
+      - type: file
+        url: https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.4/umu-launcher-1.4.4-zipapp.tar
+        sha256: eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851
+        dest-filename: umu-zipapp.tar
+  - name: blizznux
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 blizznux /app/bin/blizznux
+      - install -Dm755 blizznux-run /app/lib/BlizzNux/_up_/bin/blizznux-run
+      - install -Dm644 com.blizznux.launcher.desktop /app/share/applications/com.blizznux.launcher.desktop
+      - for s in 16 32 48 64 128 256; do install -Dm644 icon-$s.png /app/share/icons/hicolor/${s}x${s}/apps/com.blizznux.launcher.png; done
+      - install -Dm644 com.blizznux.launcher.metainfo.xml /app/share/metainfo/com.blizznux.launcher.metainfo.xml
+    sources:
+      - type: file
+        path: ../src-tauri/target/release/blizznux
+      - type: file
+        path: ../bin/blizznux-run
+      - type: file
+        path: ../share/applications/com.blizznux.launcher.desktop
+      - type: file
+        path: ../share/icons/hicolor/16x16/apps/com.blizznux.launcher.png
+        dest-filename: icon-16.png
+      - type: file
+        path: ../share/icons/hicolor/32x32/apps/com.blizznux.launcher.png
+        dest-filename: icon-32.png
+      - type: file
+        path: ../share/icons/hicolor/48x48/apps/com.blizznux.launcher.png
+        dest-filename: icon-48.png
+      - type: file
+        path: ../share/icons/hicolor/64x64/apps/com.blizznux.launcher.png
+        dest-filename: icon-64.png
+      - type: file
+        path: ../share/icons/hicolor/128x128/apps/com.blizznux.launcher.png
+        dest-filename: icon-128.png
+      - type: file
+        path: ../share/icons/hicolor/256x256/apps/com.blizznux.launcher.png
+        dest-filename: icon-256.png
+      - type: file
+        path: com.blizznux.launcher.metainfo.xml
