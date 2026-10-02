@@ -8,13 +8,40 @@ use std::process::{Command, Stdio};
 
 use crate::current_prefix;
 
-const FLAVORS: [(&str, &str); 5] = [
-    ("_retail_", "Retail"),
-    ("_classic_", "Classic"),
-    ("_classic_era_", "Classic Era"),
-    ("_ptr_", "PTR"),
-    ("_xptr_", "PTR (Classic)"),
-];
+/// Executables Battle.net ships per client. Any `_name_` folder holding one is a WoW install.
+const WOW_EXES: [&str; 6] = ["Wow.exe", "WowT.exe", "WowB.exe", "WowClassic.exe", "WowClassicT.exe", "WowClassicB.exe"];
+
+fn flavor_label(folder: &str) -> String {
+    match folder {
+        "_retail_" => "Retail".into(),
+        "_ptr_" => "Retail PTR".into(),
+        "_xptr_" => "Retail PTR (X)".into(),
+        "_beta_" => "Retail Beta".into(),
+        "_classic_" => "Classic".into(),
+        "_classic_ptr_" => "Classic PTR".into(),
+        "_classic_beta_" => "Classic Beta".into(),
+        "_classic_era_" => "Classic Era".into(),
+        "_classic_era_ptr_" => "Classic Era PTR".into(),
+        "_anniversary_" => "Anniversary".into(),
+        other => {
+            // Unknown future client: make a readable label from the folder name.
+            let name = other.trim_matches('_').replace('_', " ");
+            let mut c = name.chars();
+            match c.next() { Some(f) => f.to_uppercase().collect::<String>() + c.as_str(), None => other.to_string() }
+        }
+    }
+}
+
+/// Which family of addon builds an install wants: "retail", "classic" (progression) or "era".
+fn flavor_family(folder: &str, exe: &str) -> &'static str {
+    if !exe.starts_with("WowClassic") {
+        return "retail";
+    }
+    match folder {
+        "_classic_" | "_classic_ptr_" | "_classic_beta_" => "classic",
+        _ => "era",
+    }
+}
 
 #[derive(serde::Serialize)]
 pub struct WowInstall {
@@ -22,6 +49,8 @@ pub struct WowInstall {
     label: String,
     path: String,
     addons_dir: String,
+    exe: String,
+    family: String,
 }
 
 #[derive(serde::Serialize)]
@@ -62,23 +91,34 @@ pub fn wow_installs() -> Vec<WowInstall> {
     let prefix = current_prefix();
     let mut out = Vec::new();
     for root in wow_roots(&prefix) {
-        for (dir, label) in FLAVORS {
-            let p = root.join(dir);
-            if p.join("Wow.exe").is_file() || p.join("WowClassic.exe").is_file() || p.join("WowT.exe").is_file() {
-                if out.iter().any(|w: &WowInstall| w.flavor == dir) {
-                    continue;
-                }
-                let addons = p.join("Interface").join("AddOns");
-                let _ = fs::create_dir_all(&addons);
-                out.push(WowInstall {
-                    flavor: dir.into(),
-                    label: label.into(),
-                    path: p.display().to_string(),
-                    addons_dir: addons.display().to_string(),
-                });
+        let Ok(rd) = fs::read_dir(&root) else { continue };
+        let mut dirs: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with('_') && n.ends_with('_') && n.len() > 2)
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let p = root.join(&dir);
+            let Some(exe) = WOW_EXES.iter().find(|e| p.join(e).is_file()) else { continue };
+            if out.iter().any(|w: &WowInstall| w.flavor == dir) {
+                continue;
             }
+            let addons = p.join("Interface").join("AddOns");
+            let _ = fs::create_dir_all(&addons);
+            out.push(WowInstall {
+                label: flavor_label(&dir),
+                family: flavor_family(&dir, exe).into(),
+                exe: (*exe).into(),
+                flavor: dir,
+                path: p.display().to_string(),
+                addons_dir: addons.display().to_string(),
+            });
         }
     }
+    // Retail first, then the rest alphabetically.
+    out.sort_by_key(|w| (w.flavor != "_retail_", w.flavor.clone()));
     out
 }
 
@@ -254,6 +294,12 @@ pub fn install_addon_bytes(request: tauri::ipc::Request<'_>) -> Result<Vec<Strin
 }
 
 fn pick_asset_for_flavor<'a>(assets: &'a [serde_json::Value], flavor: &str) -> Option<&'a str> {
+    let family = match flavor {
+        "_retail_" | "_ptr_" | "_xptr_" | "_beta_" => "retail",
+        "_classic_" | "_classic_ptr_" | "_classic_beta_" => "classic",
+        f if f.starts_with("family:") => &f[7..],
+        _ => "era",
+    };
     let zips: Vec<&str> = assets
         .iter()
         .filter_map(|a| a["browser_download_url"].as_str())
@@ -261,9 +307,9 @@ fn pick_asset_for_flavor<'a>(assets: &'a [serde_json::Value], flavor: &str) -> O
         .collect();
     let classic_tags = ["-classic", "-vanilla", "-bcc", "-tbc", "-wrath", "-wotlk", "-cata", "-mists", "-mop"];
     let is_classic = |u: &&str| classic_tags.iter().any(|t| u.to_lowercase().contains(t));
-    match flavor {
-        "_classic_era_" => zips.iter().find(|u| { let l = u.to_lowercase(); l.contains("-classic") || l.contains("-vanilla") }).copied(),
-        "_classic_" => zips.iter().find(|u| { let l = u.to_lowercase(); l.contains("-mists") || l.contains("-mop") || l.contains("-cata") || l.contains("-wrath") || l.contains("-wotlk") }).copied(),
+    match family {
+        "era" => zips.iter().find(|u| { let l = u.to_lowercase(); l.contains("-classic") || l.contains("-vanilla") }).copied(),
+        "classic" => zips.iter().find(|u| { let l = u.to_lowercase(); l.contains("-mists") || l.contains("-mop") || l.contains("-cata") || l.contains("-wrath") || l.contains("-wotlk") }).copied(),
         _ => zips.iter().find(|u| !is_classic(u)).copied(),
     }
     .or_else(|| zips.first().copied())
@@ -271,7 +317,8 @@ fn pick_asset_for_flavor<'a>(assets: &'a [serde_json::Value], flavor: &str) -> O
 
 /// Install from a link: a direct .zip URL, or a GitHub repository / release page.
 #[tauri::command]
-pub async fn install_addon_url(addons_dir: String, flavor: String, url: String) -> Result<Vec<String>, String> {
+pub async fn install_addon_url(addons_dir: String, flavor: String, family: Option<String>, url: String) -> Result<Vec<String>, String> {
+    let flavor = match family { Some(f) if !f.is_empty() => format!("family:{f}"), _ => flavor };
     let dir = checked_addons_dir(&addons_dir)?;
     let u: url::Url = url.trim().parse().map_err(|e: url::ParseError| e.to_string())?;
     if u.scheme() != "https" {
@@ -463,15 +510,17 @@ pub async fn wowup_install() -> Result<String, String> {
     Ok(version)
 }
 
-fn flavor_client(flavor: &str) -> Option<(u32, &'static str)> {
-    // (WowUp WowClientType, executable) — values from WowUp's wowup-lib types.ts
-    match flavor {
-        "_retail_" => Some((0, "Wow.exe")),
-        "_classic_" => Some((1, "WowClassic.exe")),
-        "_ptr_" => Some((2, "WowT.exe")),
-        "_classic_era_" => Some((6, "WowClassic.exe")),
-        "_xptr_" => Some((8, "WowT.exe")),
-        _ => None,
+/// WowUp's WowClientType for an install, mirroring WowUp's own getClientType():
+/// Retail 0, Classic 1, RetailPtr 2, ClassicPtr 3, Beta 4, ClassicBeta 5, ClassicEra 6,
+/// ClassicEraPtr 7, RetailXPtr 8, Anniversary 9.
+fn wowup_client_type(folder: &str, exe: &str) -> u32 {
+    match exe {
+        "Wow.exe" => 0,
+        "WowClassic.exe" => match folder { "_classic_era_" => 6, "_anniversary_" => 9, _ => 1 },
+        "WowT.exe" => if folder == "_xptr_" { 8 } else { 2 },
+        "WowClassicT.exe" => if folder == "_classic_era_ptr_" { 7 } else { 3 },
+        "WowB.exe" => 4,
+        _ => 5,
     }
 }
 
@@ -506,8 +555,8 @@ pub(crate) fn seed_wowup_installs() -> Result<usize, String> {
     let mut list: Vec<serde_json::Value> = prefs["wow_installations"].as_array().cloned().unwrap_or_default();
     let mut added = 0;
     for w in installs {
-        let Some((client_type, exe)) = flavor_client(&w.flavor) else { continue };
-        let location = PathBuf::from(&w.path).join(exe);
+        let client_type = wowup_client_type(&w.flavor, &w.exe);
+        let location = PathBuf::from(&w.path).join(&w.exe);
         if !location.is_file() {
             continue;
         }

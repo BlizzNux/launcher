@@ -144,7 +144,7 @@ async function installFromUrl() {
   if (!url) return;
   addonsStatus("Downloading…");
   try {
-    const folders = await invoke("install_addon_url", { addonsDir: wow.current.addons_dir, flavor: wow.current.flavor, url });
+    const folders = await invoke("install_addon_url", { addonsDir: wow.current.addons_dir, flavor: wow.current.flavor, family: wow.current.family, url });
     addonsStatus(`Installed: ${folders.join(", ")}`);
     $("#addon-url").value = "";
   } catch (e) { addonsStatus(String(e), true); }
