@@ -393,7 +393,123 @@ fn readiness() -> Vec<Check> {
         hint: if hint.is_empty() { pkg_hint("", family) } else { hint },
         blocking: false,
     });
+    // Debug aid: BLIZZNUX_FAKE_MISSING="umu-launcher,curl" makes those checks fail on purpose.
+    if let Ok(fake) = std::env::var("BLIZZNUX_FAKE_MISSING") {
+        for c in out.iter_mut() {
+            if fake.split(',').any(|f| f.trim() == c.name) {
+                c.ok = false;
+                c.detail = format!("{} (simulated)", c.detail);
+            }
+        }
+    }
     out
+}
+
+/// NVIDIA driver major version from the kernel module, digits only (e.g. "595").
+fn nvidia_major() -> Option<String> {
+    let text = fs::read_to_string("/proc/driver/nvidia/version").ok()?;
+    let token = text.split_whitespace().find(|t| t.chars().next().map_or(false, |c| c.is_ascii_digit()) && t.contains('.'))?;
+    let major: String = token.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if major.is_empty() { None } else { Some(major) }
+}
+
+fn multilib_enabled() -> bool {
+    fs::read_to_string("/etc/pacman.conf")
+        .map(|t| t.lines().any(|l| l.trim() == "[multilib]"))
+        .unwrap_or(false)
+}
+
+/// The exact root commands that would fix a failed readiness check, or None if we don't know how.
+fn fix_steps(check: &str) -> Option<Vec<String>> {
+    let family = distro_family();
+    let vendors = gpu_vendors();
+    let mut steps: Vec<String> = Vec::new();
+    match (check, family) {
+        ("umu-launcher", "arch") => steps.push("pacman -S --needed --noconfirm umu-launcher".into()),
+        ("umu-launcher", "fedora") => steps.push("dnf -y install umu-launcher".into()),
+        ("umu-launcher", "debian") => {
+            steps.push("apt-get update".into());
+            steps.push("apt-get install -y umu-launcher".into());
+        }
+        ("curl", "arch") => steps.push("pacman -S --needed --noconfirm curl".into()),
+        ("curl", "fedora") => steps.push("dnf -y install curl".into()),
+        ("curl", "debian") => {
+            steps.push("apt-get update".into());
+            steps.push("apt-get install -y curl".into());
+        }
+        ("Vulkan driver (32-bit)", fam) => {
+            let mut pkgs: Vec<String> = Vec::new();
+            for v in &vendors {
+                let pkg = match (*v, fam) {
+                    ("nvidia", "arch") => "lib32-nvidia-utils".to_string(),
+                    ("amd", "arch") => "lib32-vulkan-radeon".to_string(),
+                    ("intel", "arch") => "lib32-vulkan-intel".to_string(),
+                    ("nvidia", "fedora") => "nvidia-driver-libs.i686".to_string(),
+                    (_, "fedora") => "mesa-vulkan-drivers.i686".to_string(),
+                    ("nvidia", "debian") => format!("libnvidia-gl-{}:i386", nvidia_major()?),
+                    (_, "debian") => "mesa-vulkan-drivers:i386".to_string(),
+                    _ => return None,
+                };
+                if !pkgs.contains(&pkg) {
+                    pkgs.push(pkg);
+                }
+            }
+            if pkgs.is_empty() {
+                return None;
+            }
+            match fam {
+                "arch" => {
+                    if !multilib_enabled() {
+                        steps.push("sed -i '/^#\\[multilib\\]/,/^#Include/ s/^#//' /etc/pacman.conf".into());
+                        steps.push("pacman -Sy".into());
+                    }
+                    steps.push(format!("pacman -S --needed --noconfirm {}", pkgs.join(" ")));
+                }
+                "fedora" => steps.push(format!("dnf -y install {}", pkgs.join(" "))),
+                "debian" => {
+                    steps.push("dpkg --add-architecture i386".into());
+                    steps.push("apt-get update".into());
+                    steps.push(format!("apt-get install -y {}", pkgs.join(" ")));
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    }
+    Some(steps)
+}
+
+#[tauri::command]
+fn fix_plan(check: String) -> Option<Vec<String>> {
+    fix_steps(&check)
+}
+
+/// Runs the fix plan as root through the system's polkit prompt (pkexec). Returns the output.
+#[tauri::command]
+async fn fix_apply(check: String) -> Result<String, String> {
+    let steps = fix_steps(&check).ok_or("no automatic fix is known for this system")?;
+    if !on_path("pkexec") {
+        return Err("pkexec (polkit) is not available; run the commands shown in a terminal with sudo".into());
+    }
+    let script = steps.iter().map(|s| format!("echo \"+ {s}\"; {s}")).collect::<Vec<_>>().join(" && ");
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = Command::new("pkexec")
+            .arg("sh")
+            .arg("-c")
+            .arg(&script)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| e.to_string())?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        if out.status.success() {
+            Ok(text)
+        } else {
+            Err(if text.trim().is_empty() { format!("exit status {}", out.status) } else { text })
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -461,6 +577,8 @@ pub fn run() {
             install,
             import_prefix,
             readiness,
+            fix_plan,
+            fix_apply,
             app_version,
             open_external,
             read_log

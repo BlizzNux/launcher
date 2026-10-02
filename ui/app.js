@@ -26,15 +26,39 @@ function esc(s) { return String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "
 async function loadChecks() {
   let checks = [];
   try { checks = await invoke("readiness"); } catch (e) { console.error(e); return true; }
+  const plans = {};
+  for (const c of checks) { if (!c.ok) { try { plans[c.name] = await invoke("fix_plan", { check: c.name }); } catch { plans[c.name] = null; } } }
   $("#checks").innerHTML = checks.map((c) => {
     const cls = c.ok ? "ok" : (c.blocking ? "bad" : "warn");
     const mark = c.ok ? "✓" : (c.blocking ? "✗" : "!");
-    return `<li class="${cls}"><span class="mark">${mark}</span><span><strong>${esc(c.name)}</strong>: ${esc(c.detail)}${c.ok ? "" : ` <span class="hint">— <code>${esc(c.hint)}</code></span>`}</span></li>`;
+    const fix = !c.ok && plans[c.name] ? ` <button class="fix" data-check="${esc(c.name)}">Fix this for me</button>` : "";
+    return `<li class="${cls}"><span class="mark">${mark}</span><span><strong>${esc(c.name)}</strong>: ${esc(c.detail)}${c.ok ? "" : ` <span class="hint">— <code>${esc(c.hint)}</code></span>`}${fix}</span></li>`;
   }).join("");
+  $("#checks").querySelectorAll(".fix").forEach((b) => { b.onclick = () => offerFix(b.dataset.check, plans[b.dataset.check]); });
   const blocked = checks.some((c) => !c.ok && c.blocking);
   $("#do-install").disabled = blocked;
   $("#do-install").title = blocked ? "Fix the items marked ✗ first" : "";
   return !blocked;
+}
+
+function offerFix(name, steps) {
+  const el = $("#setup-log");
+  el.classList.remove("hidden");
+  el.innerHTML = `<div>This will run as administrator (you'll be asked for your password):</div>` +
+    steps.map((s) => `<div><code>${esc(s)}</code></div>`).join("") +
+    `<div style="margin-top:10px"><button id="fix-run" class="launch">Run</button> <button id="fix-cancel" class="flat">Cancel</button></div>`;
+  $("#fix-cancel").onclick = () => { el.classList.add("hidden"); };
+  $("#fix-run").onclick = async () => {
+    el.textContent = "Running… answer the password prompt if it appears.";
+    try {
+      const out = await invoke("fix_apply", { check: name });
+      el.textContent = (out.trim() || "Done.") + "\n\nRe-checking…";
+    } catch (e) {
+      el.textContent = "Failed:\n" + String(e).trim();
+    }
+    await loadChecks();
+    await refreshState();
+  };
 }
 
 function showLog(on) {
