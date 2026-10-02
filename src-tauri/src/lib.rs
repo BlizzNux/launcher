@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use tauri::{AppHandle, Manager};
 
 mod addons;
+mod reports;
 
 const FORUM_HOST: &str = "blizznux.com";
 
@@ -20,7 +21,7 @@ fn config_path() -> PathBuf {
     base.join("blizznux").join("config")
 }
 
-fn log_path() -> PathBuf {
+pub(crate) fn log_path() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home().join(".cache"));
@@ -99,6 +100,7 @@ fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
     std::thread::spawn(move || {
         let _ = child.wait();
     });
+    reports::watch_game(app.clone(), game.clone());
     Ok(script.display().to_string())
 }
 
@@ -137,7 +139,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD") {
+                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -151,25 +153,34 @@ fn read_config() -> BTreeMap<String, String> {
     load_config()
 }
 
-#[tauri::command]
-fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
-    let mut current = load_config();
-    for (k, v) in values {
-        if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD") {
-            current.insert(k, v.trim().to_string());
-        }
-    }
+pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), String> {
     let path = config_path();
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let text = format!(
+    let mut text = format!(
         "PREFIX={}\nPROTON={}\nOFFLOAD={}\n",
         current.get("PREFIX").cloned().unwrap_or_default(),
         current.get("PROTON").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
+    for k in ["INSTALL_ID", "REPORTS_AUTO"] {
+        if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
+            text.push_str(&format!("{k}={v}\n"));
+        }
+    }
     fs::write(&path, text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
+    let mut current = load_config();
+    for (k, v) in values {
+        if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD" | "REPORTS_AUTO") {
+            current.insert(k, v.trim().to_string());
+        }
+    }
+    save_config(&current)
 }
 
 const LAUNCHER_REL: &str = "drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe";
@@ -561,6 +572,24 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
             Err(e) => { eprintln!("error: {e}"); return 1; }
         },
         "readiness" => serde_json::to_string_pretty(&readiness()),
+        "report-bug" | "report-run" => {
+            let kind = if cmd == "report-bug" { "bug" } else { "run" };
+            let game = _rest.first().cloned();
+            let outcome = _rest.get(1).cloned();
+            let comment = _rest.get(2).cloned();
+            match reports::build_report(kind.into(), game, outcome, comment) {
+                Ok(body) => {
+                    println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
+                    if std::env::var_os("BLIZZNUX_SEND").is_some() {
+                        match tauri::async_runtime::block_on(reports::send_report(body)) {
+                            Ok(url) => Ok(format!("sent → {url}")),
+                            Err(e) => { eprintln!("send error: {e}"); return 1; }
+                        }
+                    } else { Ok(String::from("(not sent; set BLIZZNUX_SEND=1 to send)")) }
+                }
+                Err(e) => { eprintln!("error: {e}"); return 1; }
+            }
+        }
         _ => { eprintln!("unknown command"); return 2; }
     };
     match out {
@@ -617,6 +646,8 @@ pub fn run() {
             addons::wowup_install,
             addons::wowup_launch,
             addons::wowup_remove,
+            reports::build_report,
+            reports::send_report,
             app_version,
             open_external,
             read_log

@@ -61,6 +61,50 @@ function offerFix(name, steps) {
   };
 }
 
+// ---- reports to BlizzNux ----
+let report = { kind: "run", game: null, outcome: null, body: null };
+
+async function openReport(kind, game, intro) {
+  report = { kind, game, outcome: null, body: null };
+  $("#report-title").textContent = kind === "run" ? `How did ${game?.name || "the game"} run?` : "Report a problem";
+  $("#report-intro").textContent = intro || "";
+  $("#outcomes").classList.toggle("hidden", kind !== "run");
+  document.querySelectorAll(".outcome").forEach((b) => b.classList.remove("active"));
+  $("#report-comment").value = "";
+  $("#report-preview").textContent = "";
+  $("#report-status").textContent = "";
+  $("#report-send").disabled = kind === "run";
+  $("#report-comment").placeholder = kind === "run" ? "Anything worth noting? Optional." : "What went wrong? The launcher log is attached automatically.";
+  showPanel("report");
+  if (kind === "bug") await previewReport();
+}
+
+async function previewReport() {
+  try {
+    report.body = await invoke("build_report", { kind: report.kind, game: report.game?.code || null, outcome: report.outcome, comment: $("#report-comment").value });
+    $("#report-preview").textContent = JSON.stringify(report.body, null, 2);
+    $("#report-send").disabled = false;
+  } catch (e) { $("#report-status").textContent = String(e); }
+}
+
+async function sendReport() {
+  $("#report-send").disabled = true; $("#report-status").textContent = "Sending…";
+  try {
+    await previewReport();
+    const url = await invoke("send_report", { report: report.body });
+    $("#report-status").textContent = url ? "Sent. Thank you." : "Sent.";
+    setTimeout(hidePanel, 1500);
+  } catch (e) { $("#report-status").textContent = String(e); $("#report-send").disabled = false; }
+}
+
+async function onGameEnded(ev) {
+  const g = ev.payload || {};
+  const mins = Math.round((g.seconds || 0) / 60);
+  const auto = (await invoke("read_config")).REPORTS_AUTO === "1";
+  await openReport("run", { code: g.code, name: g.name }, `${g.name} ran for about ${mins} minute${mins === 1 ? "" : "s"}. Your setup and the game build are attached${auto ? " and will be sent as soon as you pick an answer" : ""}.`);
+  report.auto = auto;
+}
+
 // ---- WoW addons ----
 let wow = { installs: [], current: null };
 
@@ -197,7 +241,7 @@ async function launch(game) {
 
 async function showPanel(name) {
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons" }[name] || "";
+  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report" }[name] || "";
   if (name === "addons") loadAddons();
   $("#panel").classList.remove("hidden");
 }
@@ -228,6 +272,7 @@ async function checkUpdate(current) {
 async function loadConfig() {
   const c = await invoke("read_config");
   $("#cfg-prefix").value = c.PREFIX || "";
+  $("#cfg-reports-auto").checked = c.REPORTS_AUTO === "1";
   $("#cfg-proton").value = c.PROTON || "";
   const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
   off.checked = true;
@@ -235,7 +280,7 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value } });
+    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -285,6 +330,17 @@ async function init() {
     try { $("#diag").textContent = await invoke("doctor"); } catch (e) { $("#diag").textContent = String(e); }
   };
   $("#log").onclick = async () => { $("#diag").textContent = (await invoke("read_log")) || "(log is empty)"; };
+  $("#report-bug").onclick = () => openReport("bug", null, "Describe what went wrong. The last lines of the launcher log and your setup are attached; home paths are replaced with ~.");
+  document.querySelectorAll(".outcome").forEach((b) => { b.onclick = async () => {
+    document.querySelectorAll(".outcome").forEach((o) => o.classList.toggle("active", o === b));
+    report.outcome = b.dataset.outcome;
+    await previewReport();
+    if (report.auto) sendReport();
+  }; });
+  $("#report-send").onclick = sendReport;
+  $("#report-skip").onclick = hidePanel;
+  $("#report-comment").addEventListener("change", () => { if (report.body) previewReport(); });
+  window.__TAURI__.event.listen("game-ended", onGameEnded);
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
     showLog(true);

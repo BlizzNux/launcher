@@ -75,8 +75,32 @@
       <div class="row">
         <button id="doctor">Run doctor</button>
         <button id="log">Show log</button>
+        <button id="report-bug">Report a problem</button>
       </div>
       <pre id="diag" class="diag"></pre>
+
+      <h2>Reports to BlizzNux</h2>
+      <p class="muted">After a game session the launcher asks how it ran and can send your setup (distro, GPU, driver,
+        Proton, game and Battle.net builds) to the matching thread on blizznux.com. Reports are anonymous; you see
+        each one before it is sent unless you turn on automatic sending.</p>
+      <label class="radio"><input type="checkbox" id="cfg-reports-auto"> Send run reports automatically (no preview)</label>
+    </section>
+
+    <section id="panel-report" class="panel-page">
+      <h1 id="report-title">How did it run?</h1>
+      <p id="report-intro" class="muted"></p>
+      <div class="row" id="outcomes">
+        <button class="outcome" data-outcome="perfect">Perfect</button>
+        <button class="outcome" data-outcome="issues">Playable with issues</button>
+        <button class="outcome" data-outcome="broken">Broken</button>
+      </div>
+      <textarea id="report-comment" rows="3" placeholder="Anything worth noting? Optional."></textarea>
+      <details id="report-preview-wrap"><summary class="muted">What will be sent</summary><pre id="report-preview" class="diag"></pre></details>
+      <div class="row">
+        <button id="report-send" class="launch" disabled>Send to BlizzNux</button>
+        <button id="report-skip" class="flat">Not now</button>
+        <span id="report-status" class="muted"></span>
+      </div>
     </section>
 
     <section id="panel-setup" class="panel-page">
