@@ -67,27 +67,65 @@ async function refreshAccount() {
   $("#acct-linked").classList.toggle("hidden", !account.linked);
   $("#acct-name").textContent = account.username;
   $("#cfg-share").checked = account.sharing;
+  $("#cfg-bug-auto").checked = account.bug_auto;
   return account;
 }
 
-function openLinkPage() {
-  // Keep the box open so the code field stays visible next to the site.
-  $("#site").src = LINK_PAGE;
+let pollTimer;
+
+function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+
+// Log in with Flarum's own form inside the launcher; the site approves the pairing on login
+// and the launcher collects the token by polling. Nothing is typed or copied.
+async function startLogin() {
+  stopPolling();
+  $("#login-wait").classList.remove("hidden"); $("#login-done").classList.add("hidden");
+  $("#login-retry").classList.add("hidden");
+  $("#login-status").textContent = "Contacting blizznux.com…";
+  showPanel("login");
+  try {
+    const s = await invoke("link_start");
+    await invoke("login_open", { url: s.url });
+    $("#login-status").textContent = "Waiting for you to log in in the BlizzNux window…";
+    pollTimer = setInterval(pollLogin, 2000);
+  } catch (e) {
+    $("#login-status").textContent = `Could not start: ${e}`;
+    $("#login-retry").classList.remove("hidden");
+  }
 }
 
-async function linkWithCode(inputSel, statusSel) {
-  const code = $(inputSel).value.trim();
-  if (!code) { $(statusSel).textContent = "Paste the code from blizznux.com first."; return; }
-  $(statusSel).textContent = "Linking…";
+async function pollLogin() {
   try {
-    await invoke("link_account", { code });
+    try { await invoke("login_approve_tick"); } catch (e) { console.error(e); }
+    const r = await invoke("link_poll");
+    if (r.status === "linked") {
+      stopPolling();
+      invoke("login_close").catch(() => {});
+      await refreshAccount();
+      $("#login-name").textContent = r.username;
+      $("#opt-share").checked = account.sharing; $("#opt-bug").checked = account.bug_auto;
+      $("#login-wait").classList.add("hidden"); $("#login-done").classList.remove("hidden");
+      $("#site").src = FORUM; // reload the forum: the login is shared with the embedded view
+    } else if (r.status === "expired" || r.status === "none") {
+      stopPolling();
+      invoke("login_close").catch(() => {});
+      $("#login-status").textContent = "The login window expired.";
+      $("#login-retry").classList.remove("hidden");
+    }
+  } catch (e) {
+    stopPolling();
+    $("#login-status").textContent = String(e);
+    $("#login-retry").classList.remove("hidden");
+  }
+}
+
+async function finishLogin() {
+  try {
+    await invoke("write_config", { values: { REPORTS_SHARE: $("#opt-share").checked ? "1" : "0", BUG_AUTO: $("#opt-bug").checked ? "1" : "0" } });
     await refreshAccount();
-    $(statusSel).textContent = `Logged in as ${account.username}.`;
-    $(inputSel).value = "";
-    status(`Logged in as ${account.username}. Turn on sharing in Settings when you're ready.`);
-    $("#site").src = FORUM;
-    setTimeout(hidePanel, 1200);
-  } catch (e) { $(statusSel).textContent = String(e); }
+  } catch (e) { status(String(e), true); }
+  hidePanel();
+  status(`Logged in as ${account.username}.${account.sharing ? " Sharing verification reports." : ""}`);
 }
 
 // ---- reports to BlizzNux ----
@@ -340,7 +378,7 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0" } });
+    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -397,12 +435,11 @@ async function init() {
   window.__TAURI__.event.listen("game-crashed", (e) => { const g = e.payload || {}; status(`${g.name} closed after ${g.seconds} s.${account.sharing ? " Recorded." : ""}`, true); });
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
-  $("#acct-link").onclick = openLinkPage;
-  $("#login-go").onclick = openLinkPage;
-  $("#login-later").onclick = hidePanel;
-  $("#login-link").onclick = () => linkWithCode("#login-code", "#login-status");
-  $("#login-code").addEventListener("keydown", (e) => { if (e.key === "Enter") linkWithCode("#login-code", "#login-status"); });
-  $("#acct-link-code").onclick = () => linkWithCode("#acct-code", "#acct-status");
+  $("#acct-link").onclick = startLogin;
+  $("#login-retry").onclick = startLogin;
+  $("#login-later").onclick = () => { stopPolling(); invoke("link_cancel").catch(() => {}); invoke("login_close").catch(() => {}); hidePanel(); };
+  $("#login-finish").onclick = finishLogin;
+  $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };
   $("#cfg-share").addEventListener("change", saveConfig);
   $("#do-install").onclick = async () => {
@@ -428,7 +465,7 @@ async function init() {
   loadConfig();
   const st = await refreshState(true);
   const acct = await refreshAccount();
-  if (st.installed && !acct.linked) showPanel("login");
+  if (st.installed && !acct.linked) startLogin();
   checkUpdate(version);
   checkBattlenet();
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch

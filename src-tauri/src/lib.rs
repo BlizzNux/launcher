@@ -141,7 +141,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "REPORTS_SHARE" | "LAST_LAUNCH_OK" | "LAST_RUN_OK") {
+                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -166,7 +166,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("PROTON").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
-    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "REPORTS_SHARE", "LAST_LAUNCH_OK", "LAST_RUN_OK"] {
+    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK"] {
         if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
@@ -184,7 +184,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
 fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
     let mut current = load_config();
     for (k, v) in values {
-        if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE") {
+        if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO") {
             current.insert(k, v.trim().to_string());
         }
     }
@@ -593,6 +593,34 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
             Err(e) => { eprintln!("error: {e}"); return 1; }
         },
         "readiness" => serde_json::to_string_pretty(&readiness()),
+        "link-start" => match tauri::async_runtime::block_on(reports::link_start()) {
+            Ok(v) => serde_json::to_string_pretty(&v),
+            Err(e) => { eprintln!("error: {e}"); return 1; }
+        },
+        "link-poll" => match tauri::async_runtime::block_on(reports::link_poll()) {
+            Ok(v) => serde_json::to_string_pretty(&v),
+            Err(e) => { eprintln!("error: {e}"); return 1; }
+        },
+        // start a pairing and poll until linked/expired (test aid; one process keeps the secret)
+        "link-test" => {
+            let rc = tauri::async_runtime::block_on(async {
+                let st = match reports::link_start().await { Ok(v) => v, Err(e) => { eprintln!("start error: {e}"); return 1; } };
+                println!("{}", serde_json::to_string(&st).unwrap_or_default());
+                for _ in 0..20 {
+                    match reports::link_poll().await {
+                        Ok(r) => {
+                            let v = serde_json::to_value(&r).unwrap_or_default();
+                            println!("{v}");
+                            if v["status"] != "pending" { return 0; }
+                        }
+                        Err(e) => { eprintln!("poll error: {e}"); return 1; }
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                0
+            });
+            return rc;
+        }
         "battlenet-update" => match tauri::async_runtime::block_on(updates::battlenet_update_check()) {
             Ok(v) => serde_json::to_string_pretty(&v),
             Err(e) => { eprintln!("error: {e}"); return 1; }
@@ -686,6 +714,12 @@ pub fn run() {
             reports::send_report,
             reports::account_status,
             reports::link_account,
+            reports::link_start,
+            reports::link_poll,
+            reports::link_cancel,
+            reports::login_open,
+            reports::login_close,
+            reports::login_approve_tick,
             reports::unlink_account,
             updates::update_check,
             updates::update_install,

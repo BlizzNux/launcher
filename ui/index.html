@@ -81,39 +81,37 @@
       <h2>BlizzNux account</h2>
       <div id="acct-unlinked">
         <p class="muted">The launcher works without an account. Log in with blizznux.com to share compatibility
-          reports with the community: successful launches, game sessions and anything that breaks are then
-          recorded under your account.</p>
-        <div class="row">
-          <button id="acct-link">Log in or create an account</button>
-          <input id="acct-code" placeholder="Code from blizznux.com" maxlength="12" autocomplete="off" spellcheck="false" style="width:14em">
-          <button id="acct-link-code">Link</button>
-          <span id="acct-status" class="muted"></span>
-        </div>
+          reports with the community: launches, game sessions and anything that breaks are then recorded under your account.</p>
+        <div class="row"><button id="acct-link">Log in with BlizzNux.com</button></div>
       </div>
       <div id="acct-linked" class="hidden">
         <p>Logged in as <strong id="acct-name"></strong>. <button id="acct-unlink" class="flat small">Log out of the launcher</button></p>
-        <label class="radio"><input type="checkbox" id="cfg-share"> Share compatibility reports with the community</label>
-        <p class="muted">When on, each Battle.net launch and each game session is reported automatically with your setup
-          (distro, GPU and driver, Proton, game and Battle.net builds). Failures are recorded too. Home paths are never sent.</p>
-        <label class="radio"><input type="checkbox" id="cfg-reports-auto"> Also send the "how did it run?" answer without a preview</label>
+        <label class="radio"><input type="checkbox" id="cfg-share"> Share verification reports (launches and game sessions, with your setup)</label>
+        <label class="radio"><input type="checkbox" id="cfg-bug-auto"> Send bug reports automatically when a launch fails</label>
+        <label class="radio"><input type="checkbox" id="cfg-reports-auto"> Send the "how did it run?" answer without a preview</label>
+        <p class="muted">Home paths are never sent. Failures are recorded under your account either way once sharing is on.</p>
       </div>
     </section>
 
     <section id="panel-login" class="panel-page">
-      <h1>Log in with BlizzNux.com</h1>
-      <p>The launcher works without an account. With one, you can share compatibility reports with the community:
-        every successful launch and game session helps others, and anything that breaks is recorded under your account.</p>
-      <ol class="steps">
-        <li>Log in or sign up on blizznux.com (opens here in the launcher).</li>
-        <li>The site shows a short code. Paste it below.</li>
-      </ol>
-      <div class="row">
-        <button id="login-go" class="launch">Log in or create an account</button>
-        <input id="login-code" placeholder="Code from blizznux.com" maxlength="12" autocomplete="off" spellcheck="false" style="width:14em">
-        <button id="login-link">Link</button>
-        <button id="login-later" class="flat">Not now</button>
+      <div id="login-wait">
+        <h1>Log in with BlizzNux.com</h1>
+        <p>A BlizzNux.com window has opened: log in there, or create an account. The launcher links itself the moment
+          you're in. Without an account the launcher still works; you just can't share reports.</p>
+        <div class="row">
+          <span id="login-status" class="muted">Waiting for you to log in…</span>
+          <span class="spacer"></span>
+          <button id="login-retry" class="flat hidden">Try again</button>
+          <button id="login-later" class="flat">Not now</button>
+        </div>
       </div>
-      <p id="login-status" class="muted">The launcher never sees your password; the code is valid for ten minutes and works once.</p>
+      <div id="login-done" class="hidden">
+        <h1>Linked as <span id="login-name"></span></h1>
+        <p>Choose what to share with the community. Both are off until you turn them on, and you can change them in Settings.</p>
+        <label class="radio"><input type="checkbox" id="opt-share"> Share verification reports: each Battle.net launch and game session, with your setup (distro, GPU and driver, Proton, game and Battle.net builds)</label>
+        <label class="radio"><input type="checkbox" id="opt-bug"> Send bug reports automatically when a launch fails (the launcher log is attached; home paths are never sent)</label>
+        <div class="row" style="margin-top:12px"><button id="login-finish" class="launch">Done</button></div>
+      </div>
     </section>
 
     <section id="panel-report" class="panel-page">

@@ -6,15 +6,177 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::{current_prefix, home, load_config, save_config};
 
 pub const DEFAULT_REPORT_URL: &str = "https://blizznux.com/api/launcher/reports";
 pub const DEFAULT_LINK_URL: &str = "https://blizznux.com/api/launcher/link";
+pub const LINK_PAGE: &str = "https://blizznux.com/launcher/link";
 
 fn link_url() -> String {
     std::env::var("BLIZZNUX_LINK_URL").unwrap_or_else(|_| DEFAULT_LINK_URL.to_string())
+}
+
+/// The pairing in progress (pair_secret never leaves the process).
+struct Pairing {
+    pair_id: String,
+    pair_secret: String,
+    started: Instant,
+}
+
+static PAIRING: std::sync::Mutex<Option<Pairing>> = std::sync::Mutex::new(None);
+
+fn http() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct LinkStart {
+    url: String,
+    expires_in: u64,
+}
+
+/// Register a pairing with the site and return the login page URL to open.
+#[tauri::command]
+pub async fn link_start() -> Result<LinkStart, String> {
+    let resp = http()?
+        .post(format!("{}/start", link_url()))
+        .json(&serde_json::json!({ "install_id": install_id(), "launcher_version": env!("CARGO_PKG_VERSION"), "distro": os_release("PRETTY_NAME") }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    if !status.is_success() {
+        return Err(body["error"].as_str().unwrap_or("the site did not accept the pairing request").to_string());
+    }
+    let pair_id = body["pair_id"].as_str().unwrap_or("").to_string();
+    let pair_secret = body["pair_secret"].as_str().unwrap_or("").to_string();
+    if pair_id.is_empty() || pair_secret.len() < 16 {
+        return Err("the site returned an invalid pairing".into());
+    }
+    let expires_in = body["expires_in"].as_u64().unwrap_or(600);
+    *PAIRING.lock().map_err(|e| e.to_string())? = Some(Pairing { pair_id, pair_secret, started: Instant::now() });
+    // The page gets no pairing parameter: approval is triggered by the launcher itself
+    // from inside its own login window, so a crafted link can never approve a pairing.
+    let page = std::env::var("BLIZZNUX_LINK_PAGE").unwrap_or_else(|_| LINK_PAGE.to_string());
+    Ok(LinkStart { url: page, expires_in })
+}
+
+const LOGIN_WINDOW: &str = "login";
+
+/// Open blizznux.com's login page as the top-level document of a dedicated window, so the
+/// launcher can run script in it (impossible in the cross-origin frame of the main window).
+#[tauri::command]
+pub fn login_open(app: AppHandle, url: String) -> Result<(), String> {
+    let u: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
+    let allowed = std::env::var("BLIZZNUX_LINK_PAGE").ok().and_then(|p| p.parse::<url::Url>().ok()).and_then(|p| p.host_str().map(String::from));
+    if u.host_str() != Some("blizznux.com") && u.host_str().map(String::from) != allowed {
+        return Err("login window only opens blizznux.com".into());
+    }
+    if let Some(w) = app.get_webview_window(LOGIN_WINDOW) {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, LOGIN_WINDOW, WebviewUrl::External(u))
+        .title("Log in with BlizzNux.com")
+        .inner_size(560.0, 720.0)
+        .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn login_close(app: AppHandle) {
+    if let Some(w) = app.get_webview_window(LOGIN_WINDOW) {
+        let _ = w.close();
+    }
+}
+
+/// Run the approval step inside the login window: once Flarum reports a logged-in user,
+/// POST the pairing id to /link/approve with the page's own session and CSRF token.
+#[tauri::command]
+pub fn login_approve_tick(app: AppHandle) -> Result<bool, String> {
+    let pair_id = { PAIRING.lock().map_err(|e| e.to_string())?.as_ref().map(|p| p.pair_id.clone()) };
+    let Some(pair_id) = pair_id else { return Ok(false) };
+    let Some(w) = app.get_webview_window(LOGIN_WINDOW) else { return Ok(false) };
+    if !pair_id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        return Err("invalid pairing id".into());
+    }
+    let script = format!(r#"(function () {{
+  if (window.__bzApproved) return;
+  if (!(window.app && app.session && app.session.user)) return;
+  window.__bzApproved = true;
+  fetch("/api/launcher/link/approve", {{
+    method: "POST", credentials: "same-origin",
+    headers: {{ "Content-Type": "application/json", "X-CSRF-Token": app.session.csrfToken }},
+    body: JSON.stringify({{ pair_id: "{pair_id}" }})
+  }}).then(function (r) {{ if (!r.ok) window.__bzApproved = false; }}).catch(function () {{ window.__bzApproved = false; }});
+}})();"#);
+    w.eval(&script).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[derive(serde::Serialize)]
+pub struct LinkPoll {
+    status: String,
+    username: String,
+}
+
+/// Ask the site whether the user has finished logging in; stores the token when they have.
+#[tauri::command]
+pub async fn link_poll() -> Result<LinkPoll, String> {
+    let (pair_id, pair_secret, age) = {
+        let g = PAIRING.lock().map_err(|e| e.to_string())?;
+        let Some(p) = g.as_ref() else { return Ok(LinkPoll { status: "none".into(), username: String::new() }) };
+        (p.pair_id.clone(), p.pair_secret.clone(), p.started.elapsed())
+    };
+    if age > Duration::from_secs(600) {
+        *PAIRING.lock().map_err(|e| e.to_string())? = None;
+        return Ok(LinkPoll { status: "expired".into(), username: String::new() });
+    }
+    let resp = http()?
+        .post(format!("{}/poll", link_url()))
+        .json(&serde_json::json!({ "pair_id": pair_id, "pair_secret": pair_secret }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let code = resp.status().as_u16();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    match code {
+        202 => Ok(LinkPoll { status: "pending".into(), username: String::new() }),
+        201 | 200 => {
+            let token = body["token"].as_str().unwrap_or("").trim().to_string();
+            let username = body["username"].as_str().unwrap_or("").trim().to_string();
+            if token.len() < 16 || token.len() > 512 || !token.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || username.is_empty() {
+                return Err("the site returned an invalid token".into());
+            }
+            let mut c = load_config();
+            c.insert("USER_TOKEN".into(), token);
+            c.insert("USERNAME".into(), username.clone());
+            save_config(&c)?;
+            *PAIRING.lock().map_err(|e| e.to_string())? = None;
+            Ok(LinkPoll { status: "linked".into(), username })
+        }
+        410 => {
+            *PAIRING.lock().map_err(|e| e.to_string())? = None;
+            Ok(LinkPoll { status: "expired".into(), username: String::new() })
+        }
+        _ => Err(body["error"].as_str().map(String::from).unwrap_or_else(|| format!("HTTP {code}"))),
+    }
+}
+
+#[tauri::command]
+pub fn link_cancel() {
+    if let Ok(mut g) = PAIRING.lock() {
+        *g = None;
+    }
 }
 
 pub fn report_url() -> String {
@@ -313,6 +475,7 @@ pub struct AccountStatus {
     linked: bool,
     username: String,
     sharing: bool,
+    bug_auto: bool,
 }
 
 #[tauri::command]
@@ -322,7 +485,25 @@ pub fn account_status() -> AccountStatus {
         linked: c.get("USER_TOKEN").map_or(false, |t| !t.is_empty()),
         username: c.get("USERNAME").cloned().unwrap_or_default(),
         sharing: c.get("REPORTS_SHARE").map_or(false, |v| v == "1"),
+        bug_auto: c.get("BUG_AUTO").map_or(false, |v| v == "1"),
     }
+}
+
+/// Automatic bug report for a failed launch, when the user opted in.
+pub fn auto_bug_report(app: &AppHandle, comment: String) {
+    let s = account_status();
+    if !(s.linked && s.bug_auto) {
+        return;
+    }
+    let h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Ok(body) = build_report("bug".into(), None, None, Some(comment)) {
+            match send_report(body).await {
+                Ok(url) => { let _ = h.emit("report-sent", serde_json::json!({ "kind": "bug", "outcome": "sent", "url": url })); }
+                Err(e) => eprintln!("[report] bug not sent: {e}"),
+            }
+        }
+    });
 }
 
 /// Exchange the one-time code shown on blizznux.com/launcher/link for a launcher token.
@@ -372,6 +553,7 @@ pub fn unlink_account() -> Result<AccountStatus, String> {
     c.remove("USER_TOKEN");
     c.remove("USERNAME");
     c.insert("REPORTS_SHARE".into(), "0".into());
+    c.insert("BUG_AUTO".into(), "0".into());
     save_config(&c)?;
     Ok(account_status())
 }
@@ -535,6 +717,9 @@ pub fn watch_launch(app: AppHandle) {
         }
         let _ = app.emit("launch-result", serde_json::json!({ "ok": ok }));
         auto_report(&app, "launch", None, if ok { "ok" } else { "failed" }, if ok { String::new() } else { "Battle.net did not start within two minutes".into() });
+        if !ok {
+            auto_bug_report(&app, "Battle.net did not start within two minutes".into());
+        }
     });
 }
 
