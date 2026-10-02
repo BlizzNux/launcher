@@ -11,6 +11,9 @@ This file is the contract between the launcher (this repository) and the site en
   on automatic sending in Settings. Home paths are replaced with `~` before anything is sent.
 - **Anonymous by default.** Each install carries a random `install_id` (UUID v4, generated once,
   stored in the launcher config) so the endpoint can rate-limit and de-duplicate.
+- **Optional account link.** A user can log in with blizznux.com (see *Account link* below). The
+  launcher then adds `user_token` to every report and the site attributes the report to that
+  account. Only linked users can opt into automatic sharing.
 
 ## Endpoint
 
@@ -25,8 +28,9 @@ local stub); the default is the URL above.
 ```json
 {
   "schema": 1,
-  "type": "bug" | "run",
+  "type": "bug" | "run" | "launch",
   "install_id": "4b9e…",
+  "user_token": "…",            // empty string when the install is not linked
   "launcher_version": "0.2.0",
   "created_at": "2026-10-02T18:40:00Z",
   "system": {
@@ -43,14 +47,24 @@ local stub); the default is the URL above.
   },
   "battlenet": { "build": "17896", "version": "2.53.4.17896" },
   "game": { "code": "WoW", "name": "World of Warcraft", "flavor": "_retail_", "version": "12.0.1.65432" },
-  "outcome": "perfect" | "issues" | "broken",
+  "target": "battlenet",        // launch reports only
+  "outcome": "perfect" | "issues" | "broken" | "ok" | "failed",
   "comment": "free text from the user, may be empty",
   "log": "last ~200 lines of the launcher log, bug reports only, paths scrubbed"
 }
 ```
 
-`game` is absent for a bug report that is not tied to a game. `outcome` and `comment` are
-absent for bug reports; `log` is absent for run reports.
+`game` is absent for a bug report that is not tied to a game and for launch reports.
+`outcome` and `comment` are absent for bug reports; `log` is absent for successful runs and
+launches.
+
+Report types and when the launcher sends them:
+
+| type | when | outcome | sent |
+|------|------|---------|------|
+| `launch` | the user pressed Launch; Battle.net appeared within 2 min (`ok`) or did not (`failed`, with log) | `ok` / `failed` | automatically, only when the user opted into sharing |
+| `run` | a game session ended after ≥ 60 s (`ok`), or the game vanished within 60 s (`broken`) | `ok` / `broken` automatically; `perfect` / `issues` / `broken` when the user answers the prompt | automatic ones only when sharing; prompt answers always, after a preview unless the user turned previews off |
+| `bug` | the user chose "Report a problem", or a launch failed and they confirmed | — | after a preview |
 
 ### Response
 
@@ -58,15 +72,37 @@ absent for bug reports; `log` is absent for run reports.
 landed in. `429` when rate-limited (the launcher shows "try again later"), `400` with
 `{ "error": "…" }` for a malformed body.
 
+## Account link
+
+`https://blizznux.com/launcher/link` is opened by the launcher inside its embedded view (the
+user is logged in there as on the normal site, or sees the normal login / sign-up).
+When the page runs for a logged-in user it must:
+
+1. Create a **launcher token** for that user (random, ≥ 32 chars, `[A-Za-z0-9._-]`), stored
+   server-side with the user id and a creation date; the user can revoke it from their profile.
+2. Hand it to the launcher with
+   `window.parent.postMessage({ type: "blizznux-link", token: "<token>", username: "<display name>" }, "*")`.
+   The launcher accepts the message only when `event.origin === "https://blizznux.com"`.
+3. Show a short "Linked to the BlizzNux launcher" confirmation.
+
+The endpoint resolves `user_token` to the account on every report; an unknown or revoked token
+is treated as anonymous (do not reject the report). "Log out of the launcher" in Settings only
+deletes the token locally; revocation is on the site.
+
 ## What the site does with each type
 
 - **bug**: creates a discussion in a private tag readable by staff only, posted by the
   BlizzNux account, titled `Launcher bug — <distro> — <short date>`, body = the report
   rendered as text with the log in a code block.
+- **launch**: appended to the user's compatibility record (linked users only); failed launches
+  are also visible to staff with their log. Not posted as forum threads.
 - **run**: finds the Updates thread for that exact game build (the site already auto-posts
   one per patch, e.g. "Hearthstone patched — build 36.6.3.253932.253216"); if none exists it
   creates one. Appends a reply: outcome, setup summary, comment. Reports with the same
-  `install_id` + game build within 24 h replace the previous reply instead of adding one.
+  `install_id` + game build within 24 h replace the previous reply instead of adding one. Linked
+  reports are posted as the user (or as BlizzNux with "reported by @user"); anonymous ones as
+  BlizzNux. Automatic `ok` runs may be aggregated ("12 users ran this build fine") rather than
+  posted one by one.
 
 ## Rate limits (endpoint side)
 

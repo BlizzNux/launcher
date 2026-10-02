@@ -78,11 +78,31 @@
       </div>
       <pre id="diag" class="diag"></pre>
 
-      <h2>Reports to BlizzNux</h2>
-      <p class="muted">After a game session the launcher asks how it ran and can send your setup (distro, GPU, driver,
-        Proton, game and Battle.net builds) to the matching thread on blizznux.com. Reports are anonymous; you see
-        each one before it is sent unless you turn on automatic sending.</p>
-      <label class="radio"><input type="checkbox" id="cfg-reports-auto"> Send run reports automatically (no preview)</label>
+      <h2>BlizzNux account</h2>
+      <div id="acct-unlinked">
+        <p class="muted">The launcher works without an account. Log in with blizznux.com to share compatibility
+          reports with the community: successful launches, game sessions and anything that breaks are then
+          recorded under your account.</p>
+        <div class="row"><button id="acct-link">Log in or create an account</button></div>
+      </div>
+      <div id="acct-linked" class="hidden">
+        <p>Logged in as <strong id="acct-name"></strong>. <button id="acct-unlink" class="flat small">Log out of the launcher</button></p>
+        <label class="radio"><input type="checkbox" id="cfg-share"> Share compatibility reports with the community</label>
+        <p class="muted">When on, each Battle.net launch and each game session is reported automatically with your setup
+          (distro, GPU and driver, Proton, game and Battle.net builds). Failures are recorded too. Home paths are never sent.</p>
+        <label class="radio"><input type="checkbox" id="cfg-reports-auto"> Also send the "how did it run?" answer without a preview</label>
+      </div>
+    </section>
+
+    <section id="panel-login" class="panel-page">
+      <h1>Log in with BlizzNux.com</h1>
+      <p>The launcher works without an account. With one, you can share compatibility reports with the community:
+        every successful launch and game session helps others, and anything that breaks is recorded under your account.</p>
+      <div class="row">
+        <button id="login-go" class="launch">Log in or create an account</button>
+        <button id="login-later" class="flat">Not now</button>
+      </div>
+      <p class="muted">Logging in happens on blizznux.com itself; the launcher never sees your password.</p>
     </section>
 
     <section id="panel-report" class="panel-page">

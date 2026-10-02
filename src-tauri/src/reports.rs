@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
-use crate::{current_prefix, home, load_config};
+use crate::{current_prefix, home, load_config, save_config};
 
 pub const DEFAULT_REPORT_URL: &str = "https://blizznux.com/api/launcher/reports";
 
@@ -303,6 +303,57 @@ fn install_id() -> String {
     id
 }
 
+#[derive(serde::Serialize)]
+pub struct AccountStatus {
+    linked: bool,
+    username: String,
+    sharing: bool,
+}
+
+#[tauri::command]
+pub fn account_status() -> AccountStatus {
+    let c = load_config();
+    AccountStatus {
+        linked: c.get("USER_TOKEN").map_or(false, |t| !t.is_empty()),
+        username: c.get("USERNAME").cloned().unwrap_or_default(),
+        sharing: c.get("REPORTS_SHARE").map_or(false, |v| v == "1"),
+    }
+}
+
+/// Called by the UI when blizznux.com's link page hands over a launcher token.
+#[tauri::command]
+pub fn link_account(token: String, username: String) -> Result<AccountStatus, String> {
+    let token = token.trim().to_string();
+    let username = username.trim().to_string();
+    if token.len() < 16 || token.len() > 512 || !token.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        return Err("that does not look like a launcher token".into());
+    }
+    if username.is_empty() || username.len() > 64 {
+        return Err("missing username".into());
+    }
+    let mut c = load_config();
+    c.insert("USER_TOKEN".into(), token);
+    c.insert("USERNAME".into(), username);
+    save_config(&c)?;
+    Ok(account_status())
+}
+
+#[tauri::command]
+pub fn unlink_account() -> Result<AccountStatus, String> {
+    let mut c = load_config();
+    c.remove("USER_TOKEN");
+    c.remove("USERNAME");
+    c.insert("REPORTS_SHARE".into(), "0".into());
+    save_config(&c)?;
+    Ok(account_status())
+}
+
+/// True when the user linked an account and opted into community reports.
+fn sharing_enabled() -> bool {
+    let s = account_status();
+    s.linked && s.sharing
+}
+
 fn scrub(text: &str) -> String {
     let h = home().display().to_string();
     text.replace(&h, "~")
@@ -329,13 +380,14 @@ fn now_iso() -> String {
 /// Build the JSON body for a report; the UI shows it before sending.
 #[tauri::command]
 pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, String> {
-    if kind != "bug" && kind != "run" {
-        return Err("kind must be bug or run".into());
+    if !matches!(kind.as_str(), "bug" | "run" | "launch") {
+        return Err("kind must be bug, run or launch".into());
     }
     let mut body = serde_json::json!({
         "schema": 1,
         "type": kind,
         "install_id": install_id(),
+        "user_token": load_config().get("USER_TOKEN").cloned().unwrap_or_default(),
         "launcher_version": env!("CARGO_PKG_VERSION"),
         "created_at": now_iso(),
         "system": system_profile(),
@@ -346,10 +398,22 @@ pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>,
             body["game"] = serde_json::to_value(g).map_err(|e| e.to_string())?;
         }
     }
-    if kind == "run" {
+    if kind == "launch" {
         let o = outcome.unwrap_or_default();
-        if !matches!(o.as_str(), "perfect" | "issues" | "broken") {
-            return Err("outcome must be perfect, issues or broken".into());
+        if !matches!(o.as_str(), "ok" | "failed") {
+            return Err("launch outcome must be ok or failed".into());
+        }
+        body["target"] = serde_json::Value::String("battlenet".into());
+        body["outcome"] = serde_json::Value::String(o.clone());
+        if o == "failed" {
+            let log = fs::read_to_string(crate::log_path()).unwrap_or_default();
+            let lines: Vec<&str> = log.lines().collect();
+            body["log"] = serde_json::Value::String(scrub(&lines[lines.len().saturating_sub(120)..].join("\n")));
+        }
+    } else if kind == "run" {
+        let o = outcome.unwrap_or_default();
+        if !matches!(o.as_str(), "perfect" | "issues" | "broken" | "ok") {
+            return Err("outcome must be perfect, issues, broken or ok".into());
         }
         body["outcome"] = serde_json::Value::String(o);
         body["comment"] = serde_json::Value::String(scrub(&comment.unwrap_or_default()).chars().take(2000).collect());
@@ -384,6 +448,41 @@ pub async fn send_report(report: serde_json::Value) -> Result<String, String> {
     }
     let url = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["url"].as_str().map(String::from)).unwrap_or_default();
     Ok(url)
+}
+
+/// Send a report in the background, only when the user linked an account and opted in.
+fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str, comment: String) {
+    if !sharing_enabled() {
+        return;
+    }
+    let (kind, outcome) = (kind.to_string(), outcome.to_string());
+    let h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match build_report(kind.clone(), game, Some(outcome.clone()), Some(comment)) {
+            Ok(body) => match send_report(body).await {
+                Ok(url) => { let _ = h.emit("report-sent", serde_json::json!({ "kind": kind, "outcome": outcome, "url": url })); }
+                Err(e) => eprintln!("[report] {kind} not sent: {e}"),
+            },
+            Err(e) => eprintln!("[report] {kind} not built: {e}"),
+        }
+    });
+}
+
+/// After Launch: did the Battle.net client actually come up? Reports ok/failed when sharing.
+pub fn watch_launch(app: AppHandle) {
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        let mut ok = false;
+        while start.elapsed() < Duration::from_secs(120) {
+            if game_running(&["Battle.net.exe", "Battle.net Launcher.exe", "Battle.net-Setup.exe"]) {
+                ok = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        let _ = app.emit("launch-result", serde_json::json!({ "ok": ok }));
+        auto_report(&app, "launch", None, if ok { "ok" } else { "failed" }, if ok { String::new() } else { "Battle.net did not start within two minutes".into() });
+    });
 }
 
 /// Is one of the game's processes running? Looks at /proc/*/cmdline (Wine shows the .exe path).
@@ -431,8 +530,13 @@ pub fn watch_game(app: AppHandle, code: Option<String>) {
         }
         let secs = began.elapsed().as_secs();
         if secs < 60 {
-            return; // crashed at start or closed immediately: not a session worth asking about
+            // Gone within a minute: treat as a failed start and record it (when sharing).
+            auto_report(&app, "run", Some(g.0.to_string()), "broken", format!("{} exited after {secs} s", g.1));
+            let _ = app.emit("game-crashed", serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
+            return;
         }
+        // A real session: record the successful run (when sharing), then ask for details.
+        auto_report(&app, "run", Some(g.0.to_string()), "ok", format!("ran for {} min", secs / 60));
         let _ = app.emit("game-ended", serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
     });
 }

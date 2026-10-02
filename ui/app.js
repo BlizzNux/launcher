@@ -4,6 +4,8 @@ const { invoke } = window.__TAURI__.core;
 const $ = (s) => document.querySelector(s);
 
 const FORUM = "https://blizznux.com/";
+const LINK_PAGE = `${FORUM}launcher/link`;
+const SITE_ORIGIN = "https://blizznux.com";
 const RELEASES = "https://api.github.com/repos/BlizzNux/launcher/releases/latest";
 
 let statusTimer;
@@ -55,6 +57,36 @@ function offerFix(name, steps) {
     await refreshState();
   };
 }
+
+// ---- BlizzNux account ----
+let account = { linked: false, username: "", sharing: false };
+
+async function refreshAccount() {
+  try { account = await invoke("account_status"); } catch (e) { console.error(e); return account; }
+  $("#acct-unlinked").classList.toggle("hidden", account.linked);
+  $("#acct-linked").classList.toggle("hidden", !account.linked);
+  $("#acct-name").textContent = account.username;
+  $("#cfg-share").checked = account.sharing;
+  return account;
+}
+
+function openLinkPage() {
+  hidePanel();
+  $("#site").src = LINK_PAGE;
+}
+
+// blizznux.com/launcher/link hands the token to the launcher with window.parent.postMessage.
+window.addEventListener("message", async (ev) => {
+  if (ev.origin !== SITE_ORIGIN) return;
+  const m = ev.data || {};
+  if (m.type !== "blizznux-link" || !m.token) return;
+  try {
+    await invoke("link_account", { token: String(m.token), username: String(m.username || "") });
+    await refreshAccount();
+    status(`Logged in as ${account.username}. Turn on sharing in Settings when you're ready.`);
+    $("#site").src = FORUM;
+  } catch (e) { status(String(e), true); }
+});
 
 // ---- reports to BlizzNux ----
 let report = { kind: "run", game: null, outcome: null, body: null };
@@ -234,7 +266,7 @@ async function launch(game) {
 
 async function showPanel(name) {
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-  $("#panel-title").textContent = { settings: "Settings", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report" }[name] || "";
+  $("#panel-title").textContent = { settings: "Settings", disclaimer: "Disclaimer", setup: "Set up Battle.net", addons: "Addons", report: "Report", login: "BlizzNux account" }[name] || "";
   if (name === "addons") loadAddons();
   $("#panel").classList.remove("hidden");
 }
@@ -297,6 +329,7 @@ async function loadConfig() {
   const c = await invoke("read_config");
   $("#cfg-prefix").value = c.PREFIX || "";
   $("#cfg-reports-auto").checked = c.REPORTS_AUTO === "1";
+  refreshAccount();
   $("#cfg-proton").value = c.PROTON || "";
   const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
   off.checked = true;
@@ -304,7 +337,7 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0" } });
+    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -358,6 +391,14 @@ async function init() {
   $("#report-skip").onclick = hidePanel;
   $("#report-comment").addEventListener("change", () => { if (report.body) previewReport(); });
   window.__TAURI__.event.listen("game-ended", onGameEnded);
+  window.__TAURI__.event.listen("game-crashed", (e) => { const g = e.payload || {}; status(`${g.name} closed after ${g.seconds} s.${account.sharing ? " Recorded." : ""}`, true); });
+  window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
+  window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
+  $("#acct-link").onclick = openLinkPage;
+  $("#login-go").onclick = openLinkPage;
+  $("#login-later").onclick = hidePanel;
+  $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };
+  $("#cfg-share").addEventListener("change", saveConfig);
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
     showLog(true);
@@ -379,7 +420,9 @@ async function init() {
     } catch (e) { $("#setup-status").textContent = String(e).trim(); }
   };
   loadConfig();
-  refreshState(true);
+  const st = await refreshState(true);
+  const acct = await refreshAccount();
+  if (st.installed && !acct.linked) showPanel("login");
   checkUpdate(version);
   checkBattlenet();
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch

@@ -101,6 +101,7 @@ fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
     std::thread::spawn(move || {
         let _ = child.wait();
     });
+    reports::watch_launch(app.clone());
     reports::watch_game(app.clone(), game.clone());
     Ok(script.display().to_string())
 }
@@ -140,7 +141,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO") {
+                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "REPORTS_SHARE") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -165,19 +166,25 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("PROTON").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
-    for k in ["INSTALL_ID", "REPORTS_AUTO"] {
+    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "REPORTS_SHARE"] {
         if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
     }
-    fs::write(&path, text).map_err(|e| e.to_string())
+    fs::write(&path, text).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
     let mut current = load_config();
     for (k, v) in values {
-        if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD" | "REPORTS_AUTO") {
+        if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE") {
             current.insert(k, v.trim().to_string());
         }
     }
@@ -677,6 +684,9 @@ pub fn run() {
             addons::wowup_remove,
             reports::build_report,
             reports::send_report,
+            reports::account_status,
+            reports::link_account,
+            reports::unlink_account,
             updates::update_check,
             updates::update_install,
             updates::battlenet_update_check,
