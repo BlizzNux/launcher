@@ -87,3 +87,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .field-name { font-weight: 600; }
 .radio { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; cursor: pointer; }
 .radio input { accent-color: var(--accent); }
+
+/* ---- first-run setup ---- */
+.choice { display: flex; align-items: center; justify-content: space-between; gap: 18px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin: 12px 0; }
+.choice-text { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.choice-text input { margin-top: 4px; width: 100%; }
+code { background: #0a1120; padding: 1px 6px; border-radius: 6px; }
+button[disabled] { opacity: .45; cursor: not-allowed; }

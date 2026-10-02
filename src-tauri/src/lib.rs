@@ -166,6 +166,72 @@ fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
     fs::write(&path, text).map_err(|e| e.to_string())
 }
 
+const LAUNCHER_REL: &str = "drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe";
+
+fn current_prefix() -> PathBuf {
+    let cfg = read_config();
+    match cfg.get("PREFIX").filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let base = std::env::var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home().join(".local").join("share"));
+            base.join("blizznux").join("prefix")
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct InstallState {
+    prefix: String,
+    installed: bool,
+    umu: bool,
+}
+
+#[tauri::command]
+fn install_state() -> InstallState {
+    let prefix = current_prefix();
+    let umu = std::env::var("PATH")
+        .map(|p| p.split(':').any(|d| PathBuf::from(d).join("umu-run").is_file()))
+        .unwrap_or(false);
+    InstallState {
+        installed: prefix.join(LAUNCHER_REL).is_file(),
+        prefix: prefix.display().to_string(),
+        umu,
+    }
+}
+
+/// Downloads Blizzard's installer and starts it (the script does the work; this returns at once).
+#[tauri::command]
+fn install(app: AppHandle) -> Result<(), String> {
+    let script = script_path(&app).ok_or("blizznux-run not found (run install.sh)")?;
+    let mut child = Command::new(&script)
+        .arg("install")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_prefix(app: AppHandle, path: String) -> Result<String, String> {
+    let mut p = path.trim().to_string();
+    if p.is_empty() {
+        return Err("enter the path to the prefix".into());
+    }
+    if let Some(rest) = p.strip_prefix("~/") {
+        p = home().join(rest).display().to_string();
+    }
+    tauri::async_runtime::spawn_blocking(move || run_script(&app, &["import", &p]))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -227,6 +293,9 @@ pub fn run() {
             set_dpi,
             read_config,
             write_config,
+            install_state,
+            install,
+            import_prefix,
             app_version,
             open_external,
             read_log

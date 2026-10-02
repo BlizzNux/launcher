@@ -78,6 +78,31 @@
       <pre id="diag" class="diag"></pre>
     </section>
 
+    <section id="panel-setup" class="panel-page">
+      <h1>Set up Battle.net</h1>
+      <p>Battle.net isn't installed in the launcher's prefix yet. Pick one:</p>
+      <div class="choice">
+        <div class="choice-text">
+          <strong>Install Battle.net</strong>
+          <span class="muted">Downloads the official installer from Blizzard and runs it. Sign in when it asks,
+            let it finish, then close Battle.net. Takes a few minutes.</span>
+        </div>
+        <button id="do-install" class="launch">Install Battle.net</button>
+      </div>
+      <div class="choice">
+        <div class="choice-text">
+          <strong>I already have Battle.net on this computer</strong>
+          <span class="muted">Point the launcher at an existing prefix from Steam, Lutris or Bottles.
+            Your games stay where they are; nothing is downloaded again.</span>
+          <input id="import-path" placeholder="e.g. ~/.local/share/Steam/steamapps/compatdata/123456/pfx">
+        </div>
+        <button id="do-import" class="flat">Use this prefix</button>
+      </div>
+      <p id="setup-status" class="muted"></p>
+      <p id="setup-umu" class="muted hidden">umu-launcher was not found on this system. Install the <code>umu-launcher</code>
+        package from your distribution first; the launcher needs it to run Proton.</p>
+    </section>
+
     <section id="panel-games" class="panel-page">
       <h1>Play a game</h1>
       <p class="muted">Starts Battle.net and launches the game directly. It must already be installed in Battle.net.</p>

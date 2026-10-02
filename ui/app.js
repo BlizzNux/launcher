@@ -18,7 +18,21 @@ function status(msg, err = false) {
   if (msg) statusTimer = setTimeout(() => { el.textContent = ""; }, 8000);
 }
 
+let state = { installed: true, prefix: "", umu: true };
+
+async function refreshState(openSetupIfMissing = false) {
+  try { state = await invoke("install_state"); } catch (e) { console.error(e); return state; }
+  $("#launch").textContent = state.installed ? "Launch Battle.net" : "Set up Battle.net";
+  $("#open-games").disabled = !state.installed;
+  $("#open-games").title = state.installed ? "" : "Install Battle.net first";
+  $("#setup-umu").classList.toggle("hidden", state.umu);
+  $("#do-install").disabled = !state.umu;
+  if (openSetupIfMissing && !state.installed) showPanel("setup");
+  return state;
+}
+
 async function launch(game) {
+  if (!state.installed) { showPanel("setup"); return; }
   status(game ? `Starting Battle.net and launching ${game}…` : "Starting Battle.net…");
   try {
     await invoke("launch", { game: game || null });
@@ -28,7 +42,7 @@ async function launch(game) {
 
 async function showPanel(name) {
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer" }[name] || "";
+  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer", setup: "Set up Battle.net" }[name] || "";
   $("#panel").classList.remove("hidden");
 }
 
@@ -110,7 +124,27 @@ async function init() {
     try { $("#diag").textContent = await invoke("doctor"); } catch (e) { $("#diag").textContent = String(e); }
   };
   $("#log").onclick = async () => { $("#diag").textContent = (await invoke("read_log")) || "(log is empty)"; };
+  $("#do-install").onclick = async () => {
+    $("#setup-status").textContent = "Downloading the installer from Blizzard… the installer window will open shortly.";
+    try { await invoke("install"); } catch (e) { $("#setup-status").textContent = String(e); return; }
+    const started = Date.now();
+    const poll = setInterval(async () => {
+      const s = await refreshState();
+      if (s.installed) { clearInterval(poll); $("#setup-status").textContent = "Battle.net is installed."; setTimeout(hidePanel, 1200); }
+      else if (Date.now() - started > 15 * 60 * 1000) { clearInterval(poll); $("#setup-status").textContent = "Still not installed. Check the log under Settings."; }
+    }, 4000);
+  };
+  $("#do-import").onclick = async () => {
+    $("#setup-status").textContent = "Checking…";
+    try {
+      const msg = await invoke("import_prefix", { path: $("#import-path").value });
+      $("#setup-status").textContent = msg.trim();
+      await loadConfig();
+      if ((await refreshState()).installed) setTimeout(hidePanel, 1000);
+    } catch (e) { $("#setup-status").textContent = String(e).trim(); }
+  };
   loadConfig();
+  refreshState(true);
   checkUpdate(version);
 }
 
