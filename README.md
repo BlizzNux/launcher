@@ -20,7 +20,8 @@ A desktop application (news feed from BlizzNux, community tab, game tiles, auto-
 the next milestone; this script is its engine and stays usable on its own.
 
 Tested on CachyOS with Proton-CachyOS and a hybrid AMD + NVIDIA laptop. Other distributions
-are best effort; please report what you find.
+are best effort; please report what you find. Guides and the compatibility list live on the
+[BlizzNux wiki](https://blizznux.com).
 
 ## Requirements
 
@@ -90,7 +91,7 @@ blizznux-run dpi 144   # 150 %
 
 ## What works
 
-See the [game compatibility list](https://github.com/BlizzNux/docs/blob/main/games.md).
+See the game compatibility list on the [BlizzNux wiki](https://blizznux.com).
 In short: the Blizzard-developed titles run; Call of Duty does not, because its Ricochet
 anti-cheat does not allow Linux.
 
