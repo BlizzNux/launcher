@@ -11,10 +11,7 @@
   <div id="bar">
     <div class="brand" id="home" title="Back to the BlizzNux.com front page"><img src="logo.png" alt=""><span>BlizzNux</span></div>
     <button id="launch" class="launch">Launch Battle.net</button>
-    <div class="play">
-      <select id="game" aria-label="Game"></select>
-      <button id="play">Play</button>
-    </div>
+    <button id="open-games" class="flat">Play a game ▾</button>
     <span id="status" class="status"></span>
     <div class="spacer"></div>
     <button id="update" class="update hidden">Update available</button>
@@ -41,13 +38,12 @@
         <label>Proton build
           <input id="cfg-proton" placeholder="auto (Proton-CachyOS, else newest GE-Proton)">
         </label>
-        <label>NVIDIA render offload
-          <select id="cfg-offload">
-            <option value="auto">Auto (on for hybrid laptops)</option>
-            <option value="on">Always on</option>
-            <option value="off">Off</option>
-          </select>
-        </label>
+        <div class="field">
+          <div class="field-name">NVIDIA render offload</div>
+          <label class="radio"><input type="radio" name="offload" value="auto"> Auto (on for hybrid laptops)</label>
+          <label class="radio"><input type="radio" name="offload" value="on"> Always on</label>
+          <label class="radio"><input type="radio" name="offload" value="off"> Off</label>
+        </div>
         <div class="row">
           <button id="cfg-save">Save</button>
           <span id="cfg-status" class="muted"></span>
@@ -67,6 +63,12 @@
         <button id="log">Show log</button>
       </div>
       <pre id="diag" class="diag"></pre>
+    </section>
+
+    <section id="panel-games" class="panel-page">
+      <h1>Play a game</h1>
+      <p class="muted">Starts Battle.net and launches the game directly. It must already be installed in Battle.net.</p>
+      <div id="games" class="tiles"></div>
     </section>
 
     <section id="panel-disclaimer" class="panel-page">

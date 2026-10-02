@@ -28,7 +28,7 @@ async function launch(game) {
 
 async function showPanel(name) {
   document.querySelectorAll(".panel-page").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-  $("#panel-title").textContent = name === "settings" ? "Settings" : "Disclaimer";
+  $("#panel-title").textContent = { settings: "Settings", games: "Play a game", disclaimer: "Disclaimer" }[name] || "";
   $("#panel").classList.remove("hidden");
   $("#bar").classList.add("hidden");
   try { await invoke("set_ui_mode", { mode: "full" }); } catch (e) { console.error(e); }
@@ -63,12 +63,13 @@ async function loadConfig() {
   const c = await invoke("read_config");
   $("#cfg-prefix").value = c.PREFIX || "";
   $("#cfg-proton").value = c.PROTON || "";
-  $("#cfg-offload").value = c.OFFLOAD || "auto";
+  const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
+  off.checked = true;
 }
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: $("#cfg-offload").value } });
+    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -77,9 +78,14 @@ async function saveConfig() {
 async function init() {
   const version = await invoke("app_version");
   $("#version").textContent = version;
-  $("#game").innerHTML = GAMES.map(([code, name]) => `<option value="${code}">${name}</option>`).join("");
+  $("#games").innerHTML = GAMES.map(([code, name]) =>
+    `<button class="tile" data-game="${code}"><span class="name">${name}</span><span class="code">${code}</span></button>`).join("");
+  $("#games").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-game]");
+    if (t) { hidePanel().then(() => launch(t.dataset.game)); }
+  });
   $("#launch").onclick = () => launch();
-  $("#play").onclick = () => launch($("#game").value);
+  $("#open-games").onclick = () => showPanel("games");
   $("#home").onclick = () => invoke("community_navigate", { url: FORUM }).catch((e) => status(String(e), true));
   $("#open-settings").onclick = () => showPanel("settings");
   $("#open-disclaimer").onclick = () => showPanel("disclaimer");

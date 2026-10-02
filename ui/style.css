@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0d1526; --panel: #141f36; --panel-2: #1b2a4a; --line: #253a63;
   --text: #e8eefb; --muted: #8fa3c7; --accent: #4fa3ff; --accent-2: #ff8a3d;
 }
@@ -60,3 +61,15 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .row button:hover, #cfg-save:hover { border-color: var(--accent); }
 .diag { background: #0a1120; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
   white-space: pre-wrap; font: 13px/1.4 monospace; min-height: 3em; max-height: 40vh; overflow: auto; }
+
+/* ---- game tiles & radio fields ---- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.tile { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px 14px;
+  text-align: left; color: var(--text); cursor: pointer; font: inherit; }
+.tile:hover { border-color: var(--accent); }
+.tile .name { font-weight: 600; display: block; }
+.tile .code { font-size: 12px; color: var(--muted); }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-name { font-weight: 600; }
+.radio { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; cursor: pointer; }
+.radio input { accent-color: var(--accent); }
