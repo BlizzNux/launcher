@@ -103,6 +103,9 @@ hybrid_nvidia() {
 }
 
 gpu_env() {
+	# The NVIDIA driver empties its shader cache once it passes the size limit, and a large game then
+	# compiles every shader again at its next start. Keep the cache; a value set by the user wins.
+	[[ ! -d /proc/driver/nvidia ]] || export __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=${__GL_SHADER_DISK_CACHE_SKIP_CLEANUP:-1}
 	case $OFFLOAD in
 	off) return ;;
 	on) ;;
