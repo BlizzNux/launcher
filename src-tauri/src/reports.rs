@@ -420,8 +420,9 @@ fn build_info(path: &Path) -> Option<Vec<BTreeMap<String, String>>> {
     Some(rows)
 }
 
-/// First length-delimited value of `field` in a protobuf message (no schema, no parser crate).
-fn pb_field(mut buf: &[u8], field: u64) -> Option<&[u8]> {
+/// The length-delimited fields of a protobuf message, in order (no schema, no parser crate);
+/// stops at the first thing it cannot read.
+fn pb_fields(mut buf: &[u8]) -> Vec<(u64, &[u8])> {
     fn varint(buf: &mut &[u8]) -> Option<u64> {
         let mut v = 0u64;
         for shift in (0..64).step_by(7) {
@@ -432,21 +433,32 @@ fn pb_field(mut buf: &[u8], field: u64) -> Option<&[u8]> {
         }
         None
     }
-    while !buf.is_empty() {
-        let key = varint(&mut buf)?;
+    fn next<'a>(buf: &mut &'a [u8]) -> Option<(u64, &'a [u8])> {
+        let key = varint(buf)?;
         let len = match key & 7 {
-            0 => { varint(&mut buf)?; continue; }
+            0 => { varint(buf)?; 0 }
             1 => 8,
-            2 => usize::try_from(varint(&mut buf)?).ok()?,
+            2 => usize::try_from(varint(buf)?).ok()?,
             5 => 4,
             _ => return None,
         };
-        if len > buf.len() { return None; }
-        let (value, rest) = buf.split_at(len);
-        buf = rest;
-        if key >> 3 == field && key & 7 == 2 { return Some(value); }
+        let whole: &'a [u8] = buf;
+        if len > whole.len() { return None; }
+        let (value, rest) = whole.split_at(len);
+        *buf = rest;
+        Some((key, value))
     }
-    None
+    let mut out = Vec::new();
+    while !buf.is_empty() {
+        let Some((key, value)) = next(&mut buf) else { break };
+        if key & 7 == 2 { out.push((key >> 3, value)); }
+    }
+    out
+}
+
+/// First length-delimited value of `field` in a protobuf message.
+fn pb_field(buf: &[u8], field: u64) -> Option<&[u8]> {
+    pb_fields(buf).into_iter().find(|(f, _)| *f == field).map(|(_, value)| value)
 }
 
 /// Installed version from Battle.net's `.product.db` install record (protobuf:
@@ -457,9 +469,56 @@ fn product_db_version(bytes: &[u8]) -> Option<String> {
     if version.is_empty() { None } else { Some(version.to_string()) }
 }
 
+/// What the Battle.net Agent has installed, from its `product.db` (protobuf: product_installs →
+/// product_code, settings → install_path): (product code, Windows install path).
+fn agent_installs(bytes: &[u8]) -> Vec<(String, String)> {
+    let text = |b: &[u8]| std::str::from_utf8(b).ok().map(str::to_string);
+    pb_fields(bytes)
+        .into_iter()
+        .filter(|(field, _)| *field == 1)
+        .filter_map(|(_, install)| Some((text(pb_field(install, 2)?)?, text(pb_field(pb_field(install, 3)?, 1)?)?)))
+        .collect()
+}
+
+/// The Windows install path of a game among the Agent's installs. The product code is the
+/// launch code in lower case except for Hearthstone and Diablo IV; test and classic clients
+/// (`herot`, `wow_classic`, …) only count when the main product is not installed.
+fn install_path<'a>(installs: &'a [(String, String)], code: &str) -> Option<&'a str> {
+    let product = match code {
+        "WTCG" => "hsb".to_string(),
+        "Fen" => "fenris".to_string(),
+        c => c.to_lowercase(),
+    };
+    installs
+        .iter()
+        .find(|(p, _)| *p == product)
+        .or_else(|| installs.iter().find(|(p, _)| p.starts_with(&product)))
+        .map(|(_, path)| path.as_str())
+}
+
+/// A Windows path as the host sees it, through the prefix's drive links
+/// (`D:\Games\Hearthstone` → `<prefix>/dosdevices/d:/Games/Hearthstone`).
+fn host_path(prefix: &Path, windows: &str) -> Option<PathBuf> {
+    let (drive, rest) = windows.split_once(':')?;
+    if drive.len() != 1 || !drive.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let rest = rest.replace('\\', "/");
+    Some(prefix.join("dosdevices").join(format!("{}:", drive.to_ascii_lowercase())).join(rest.trim_start_matches('/')))
+}
+
+/// The game's install folder: where the Agent put it, else the default location.
+fn game_root(prefix: &Path, g: &(&str, &str, &str, &[&str])) -> PathBuf {
+    let installs = fs::read(prefix.join("drive_c/ProgramData/Battle.net/Agent/product.db")).map(|b| agent_installs(&b)).unwrap_or_default();
+    install_path(&installs, g.0)
+        .and_then(|path| host_path(prefix, path))
+        .filter(|root| root.is_dir())
+        .unwrap_or_else(|| prefix.join("drive_c/Program Files (x86)").join(g.2))
+}
+
 pub fn game_info(code: &str) -> Option<GameInfo> {
     let g = game_by_code(code)?;
-    let root = current_prefix().join("drive_c/Program Files (x86)").join(g.2);
+    let root = game_root(&current_prefix(), g);
     let rows = build_info(&root.join(".build.info")).unwrap_or_default();
     let row = rows.iter().find(|r| r.get("Active").map(|a| a == "1").unwrap_or(false)).or_else(|| rows.first());
     // Hearthstone has no `.build.info`; its version only lives in `.product.db`.
@@ -880,6 +939,37 @@ mod tests {
         assert_eq!(product_db_version(&db).as_deref(), Some("36.6.3.253932.253216"));
         assert_eq!(product_db_version(&db[..db.len() - 5]), None);
         assert_eq!(product_db_version(b"\x0a\x07hs_beta"), None);
+    }
+
+    /// A protobuf length-delimited field (short payloads only).
+    fn pb(field: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![field << 3 | 2, payload.len() as u8];
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn agent_db_lists_products_with_their_install_paths() {
+        let install = |uid: &str, product: &str, path: &str| pb(1, &[pb(1, uid.as_bytes()), pb(2, product.as_bytes()), pb(3, &pb(1, path.as_bytes()))].concat());
+        let mut db = install("heroes_ptr", "herot", "C:/Program Files (x86)/Heroes of the Storm Public Test");
+        db.extend(install("heroes", "hero", "D:\\Games\\Heroes of the Storm"));
+        db.extend(install("hs_beta", "hsb", "C:/Games/Hearthstone"));
+        db.extend(install("wow_classic", "wow_classic", "C:/Games/World of Warcraft"));
+        db.extend([0x30, 0x01]); // a varint field after the installs
+        let installs = agent_installs(&db);
+        assert_eq!(installs.len(), 4);
+        assert_eq!(install_path(&installs, "Hero"), Some("D:\\Games\\Heroes of the Storm"));
+        assert_eq!(install_path(&installs, "WTCG"), Some("C:/Games/Hearthstone"));
+        assert_eq!(install_path(&installs, "WoW"), Some("C:/Games/World of Warcraft"));
+        assert_eq!(install_path(&installs, "Pro"), None);
+    }
+
+    #[test]
+    fn windows_paths_go_through_the_drive_links() {
+        let prefix = Path::new("/pfx");
+        assert_eq!(host_path(prefix, "C:/Games/Hearthstone"), Some(PathBuf::from("/pfx/dosdevices/c:/Games/Hearthstone")));
+        assert_eq!(host_path(prefix, "D:\\Games\\Heroes of the Storm"), Some(PathBuf::from("/pfx/dosdevices/d:/Games/Heroes of the Storm")));
+        assert_eq!(host_path(prefix, "Games/Hearthstone"), None);
     }
 
     #[test]
