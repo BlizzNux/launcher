@@ -26,8 +26,6 @@ body { display: flex; flex-direction: column; }
 /* ---- bottom bar ---- */
 #bar { flex: none; height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 14px;
   background: var(--panel); border-top: 1px solid var(--line); }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; cursor: pointer; margin-right: 6px; }
-.brand img { width: 32px; height: 32px; border-radius: 8px; }
 .launch { background: var(--accent); color: #06101f; border: 0; border-radius: 10px; padding: 10px 18px;
   font-weight: 700; font-size: 15px; cursor: pointer; white-space: nowrap; }
 .launch:hover { filter: brightness(1.1); }

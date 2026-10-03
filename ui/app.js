@@ -395,7 +395,6 @@ async function init() {
   $("#title-version").textContent = `v${version}`;
   initTitlebar();
   $("#launch").onclick = () => launch();
-  $("#home").onclick = () => { $("#site").src = FORUM; };
   $("#panel").addEventListener("click", (e) => { if (e.target === $("#panel")) hidePanel(); });
   $("#open-settings").onclick = () => showPanel("settings");
   $("#open-addons").onclick = () => showPanel("addons");
