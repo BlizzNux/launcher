@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "blizznux"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "libc",
  "reqwest 0.12.28",
