@@ -13,6 +13,11 @@ CONFIG=$CONFIG_DIR/config
 # Blizzard's own download endpoint. The installer is never redistributed by this project.
 INSTALLER_URL='https://www.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live'
 LAUNCHER_REL='drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe'
+# umu-launcher's own release, used when the system has none (Ubuntu, Debian and Fedora do not package it).
+UMU_VERSION=1.4.4
+UMU_URL=https://github.com/Open-Wine-Components/umu-launcher/releases/download/$UMU_VERSION/umu-launcher-$UMU_VERSION-zipapp.tar
+UMU_SHA256=eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851
+UMU_DIR=$DATA_DIR/umu
 
 PREFIX=""; PROTON=""; OFFLOAD=auto; GAME=""
 
@@ -27,6 +32,8 @@ Usage:
   blizznux-run import PATH              Use an existing Battle.net prefix (Steam compatdata/<id>/pfx,
                                         Lutris, Bottles) instead of installing again.
   blizznux-run dpi N                    Set the Windows DPI inside the prefix (96 = 100%, 144 = 150%).
+  blizznux-run umu                      Make sure umu-launcher is available (downloads it when the
+                                        system has none) and show which one is used.
   blizznux-run doctor                   Show what would be used and why.
 
 Options:
@@ -69,7 +76,7 @@ save_config() {
 	# The desktop app keeps its own keys (account, report settings) in the same file: carry them over.
 	local keep=""
 	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD)=' "$CONFIG" || true)
-	{ printf 'PREFIX=%s\nPROTON=%s\nOFFLOAD=%s\n' "$PREFIX" "$PROTON" "$OFFLOAD"; [[ -n $keep ]] && printf '%s\n' "$keep"; } > "$CONFIG"
+	{ printf 'PREFIX=%s\nPROTON=%s\nOFFLOAD=%s\n' "$PREFIX" "$PROTON" "$OFFLOAD"; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
 find_proton() {
@@ -106,15 +113,35 @@ ensure_prefix() {
 	[[ -f $CONFIG ]] || save_config
 }
 
+fetch_umu() {
+	command -v python3 >/dev/null || die "python3 is needed to run umu-launcher"
+	log "umu-launcher is not installed; downloading version $UMU_VERSION from its GitHub release"
+	local tmp; tmp=$(mktemp -d)
+	curl -fL --retry 3 -sS -o "$tmp/umu.tar" "$UMU_URL" || die "could not download umu-launcher"
+	echo "$UMU_SHA256  $tmp/umu.tar" | sha256sum -c --quiet - || die "the umu-launcher download is damaged (checksum mismatch)"
+	tar -xf "$tmp/umu.tar" -C "$tmp"
+	mkdir -p "$UMU_DIR"
+	install -m755 "$tmp/umu/umu-run" "$UMU_DIR/umu-run"
+	[[ ! -f $tmp/umu/umu_run.py ]] || install -m755 "$tmp/umu/umu_run.py" "$UMU_DIR/umu_run.py"
+	rm -rf "$tmp"
+}
+
+# umu-run to use: the system's, else the launcher's own copy (downloaded on first use).
+find_umu() {
+	if command -v umu-run >/dev/null; then command -v umu-run; return; fi
+	[[ -x $UMU_DIR/umu-run ]] || fetch_umu
+	echo "$UMU_DIR/umu-run"
+}
+
 run_umu() {
-	command -v umu-run >/dev/null || die "umu-launcher is not installed (package: umu-launcher)"
+	local umu; umu=$(find_umu)
 	local proton; proton=$(find_proton)
 	export WINEPREFIX=$PREFIX PROTONPATH=$proton GAMEID=${GAMEID:-umu-default} STORE=none PROTON_VERB=waitforexitandrun
 	gpu_env
 	local inhibit=()
 	command -v systemd-inhibit >/dev/null && inhibit=(systemd-inhibit --what=idle:sleep --why="Battle.net is running")
 	log "proton: $proton"; log "prefix: $PREFIX"
-	"${inhibit[@]}" umu-run "$@"
+	"${inhibit[@]}" "$umu" "$@"
 }
 
 cmd_install() {
@@ -157,10 +184,21 @@ cmd_launch() {
 	fi
 }
 
+cmd_umu() {
+	local umu; umu=$(find_umu)
+	echo "$umu $("$umu" --version 2>/dev/null | head -1)"
+}
+
 cmd_doctor() {
 	ensure_prefix
+	local umu; umu=$(command -v umu-run || true)
+	[[ -n $umu || ! -x $UMU_DIR/umu-run ]] || umu=$UMU_DIR/umu-run
 	echo "blizznux-run $VERSION"
-	echo "umu-run:   $(command -v umu-run || echo MISSING) $(umu-run --version 2>/dev/null | head -1)"
+	if [[ -n $umu ]]; then
+		echo "umu-run:   $umu $("$umu" --version 2>/dev/null | head -1)"
+	else
+		echo "umu-run:   not installed (downloaded on first use)"
+	fi
 	echo "proton:    $(find_proton)"
 	echo "prefix:    $PREFIX $([[ -f $PREFIX/$LAUNCHER_REL ]] && echo '(Battle.net installed)' || echo '(Battle.net not installed)')"
 	echo "offload:   $OFFLOAD $(hybrid_nvidia && echo '(hybrid NVIDIA detected)' || echo '(no hybrid NVIDIA)')"
@@ -171,7 +209,7 @@ load_config
 cmd=launch
 while (( $# )); do
 	case $1 in
-	launch|install|import|dpi|doctor) cmd=$1 ;;
+	launch|install|import|dpi|umu|doctor) cmd=$1 ;;
 	--game) GAME=${2:?--game needs a code}; shift ;;
 	--prefix) PREFIX=${2:?--prefix needs a directory}; shift ;;
 	--proton) PROTON=${2:?--proton needs a directory}; shift ;;
@@ -187,5 +225,6 @@ launch) cmd_launch ;;
 install) cmd_install ;;
 import) cmd_import "${1:-}" ;;
 dpi) cmd_dpi "${1:-}" ;;
+umu) cmd_umu ;;
 doctor) cmd_doctor ;;
 esac

@@ -46,11 +46,19 @@
     "linux": {
       "deb": {
         "depends": [
+          "curl",
+          "python3"
+        ],
+        "recommends": [
           "umu-launcher"
         ]
       },
       "rpm": {
         "depends": [
+          "curl",
+          "python3"
+        ],
+        "recommends": [
           "umu-launcher"
         ]
       }

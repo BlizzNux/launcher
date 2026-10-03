@@ -319,7 +319,8 @@ pub fn system_profile() -> SystemProfile {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let umu = run_capture("umu-run", &["--version"], Duration::from_secs(5))
+    let umu = crate::umu_run()
+        .and_then(|p| run_capture(&p.to_string_lossy(), &["--version"], Duration::from_secs(5)))
         .and_then(|t| t.lines().next().map(|l| l.trim().to_string()))
         .map(|l| l.replace("umu-launcher version ", ""))
         .map(|l| l.split(' ').next().unwrap_or("").to_string())

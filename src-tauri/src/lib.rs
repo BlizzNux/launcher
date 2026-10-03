@@ -34,6 +34,22 @@ fn config_path() -> PathBuf {
     base.join("blizznux").join("config")
 }
 
+/// umu-run: the system's, else the copy the wrapper downloads into the launcher's data folder
+/// (Ubuntu, Debian and Fedora do not package umu-launcher).
+pub(crate) fn umu_run() -> Option<PathBuf> {
+    let system = std::env::var("PATH")
+        .ok()
+        .and_then(|p| p.split(':').map(|d| PathBuf::from(d).join("umu-run")).find(|f| f.is_file()));
+    system.or_else(|| Some(own_umu()).filter(|f| f.is_file()))
+}
+
+fn own_umu() -> PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home().join(".local/share"));
+    base.join("blizznux").join("umu").join("umu-run")
+}
+
 pub(crate) fn log_path() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -228,9 +244,7 @@ struct InstallState {
 #[tauri::command]
 fn install_state() -> InstallState {
     let prefix = current_prefix();
-    let umu = std::env::var("PATH")
-        .map(|p| p.split(':').any(|d| PathBuf::from(d).join("umu-run").is_file()))
-        .unwrap_or(false);
+    let umu = umu_run().is_some();
     InstallState {
         installed: prefix.join(LAUNCHER_REL).is_file(),
         prefix: prefix.display().to_string(),
@@ -365,15 +379,22 @@ fn readiness() -> Vec<Check> {
     let vendors = gpu_vendors();
     let mut out = Vec::new();
 
-    let umu = on_path("umu-run");
+    // Without a system umu-launcher the wrapper downloads umu's own release; that needs python3.
+    let umu = umu_run();
+    let python = on_path("python3");
     out.push(Check {
         name: "umu-launcher".into(),
-        ok: umu,
-        detail: if umu { "found".into() } else { "not found on this system".into() },
+        ok: umu.is_some() || python,
+        detail: match &umu {
+            Some(p) if *p == own_umu() => "found (the launcher's own copy)".into(),
+            Some(_) => "found".into(),
+            None if python => "not installed; the launcher downloads its own copy on first use".into(),
+            None => "needs python3, which was not found".into(),
+        },
         hint: match family {
-            "arch" => "sudo pacman -S umu-launcher".into(),
-            "fedora" => "enable the umu COPR, then sudo dnf install umu-launcher".into(),
-            _ => "install umu-launcher from https://github.com/Open-Wine-Components/umu-launcher/releases".into(),
+            "arch" => "sudo pacman -S python".into(),
+            "fedora" => "sudo dnf install python3".into(),
+            _ => "sudo apt install python3".into(),
         },
         blocking: true,
     });
@@ -475,11 +496,12 @@ fn fix_steps(check: &str) -> Option<Vec<String>> {
     let vendors = gpu_vendors();
     let mut steps: Vec<String> = Vec::new();
     match (check, family) {
-        ("umu-launcher", "arch") => steps.push("pacman -S --needed --noconfirm umu-launcher".into()),
-        ("umu-launcher", "fedora") => steps.push("dnf -y install umu-launcher".into()),
+        // umu-launcher itself is downloaded by the wrapper; only python3 can be missing for it.
+        ("umu-launcher", "arch") => steps.push("pacman -S --needed --noconfirm python".into()),
+        ("umu-launcher", "fedora") => steps.push("dnf -y install python3".into()),
         ("umu-launcher", "debian") => {
             steps.push("apt-get update".into());
-            steps.push("apt-get install -y umu-launcher".into());
+            steps.push("apt-get install -y python3".into());
         }
         ("curl", "arch") => steps.push("pacman -S --needed --noconfirm curl".into()),
         ("curl", "fedora") => steps.push("dnf -y install curl".into()),

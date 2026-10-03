@@ -42,10 +42,11 @@ are best effort; please report what you find. Guides and the compatibility list 
 
 ## Requirements
 
-- `umu-launcher` — CachyOS and Arch: `pacman -S umu-launcher`; Fedora: the
-  [umu COPR](https://copr.fedorainfracloud.org/); other distros: see the
-  [umu-launcher releases](https://github.com/Open-Wine-Components/umu-launcher/releases).
-- `curl`, `bash`.
+- `umu-launcher`. If your distribution has it (CachyOS and Arch: `pacman -S umu-launcher`) that
+  one is used. Otherwise the launcher downloads umu's own
+  [release](https://github.com/Open-Wine-Components/umu-launcher/releases) into its data folder
+  on first use; no root needed.
+- `curl`, `bash`, `python3`.
 - A Proton build. If Proton-CachyOS or GE-Proton is already present it is used; otherwise umu
   downloads the latest GE-Proton on first run.
 - Vulkan drivers for your GPU (Mesa for AMD/Intel, the proprietary driver for NVIDIA).
@@ -60,9 +61,7 @@ Download the desktop app from the [releases page](https://github.com/BlizzNux/la
 | `BlizzNux_x.y.z_amd64.deb` | Debian, Ubuntu, Mint and derivatives |
 | `BlizzNux-x.y.z-1.x86_64.rpm` | Fedora, openSUSE and derivatives |
 
-You still need `umu-launcher` from your distribution (the deb and rpm declare it as a
-dependency). The first run checks for it and for the GPU drivers Proton needs, and offers to
-install what's missing.
+The first run checks for the GPU drivers Proton needs and offers to install what's missing.
 
 ### From source
 
