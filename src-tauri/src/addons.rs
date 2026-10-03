@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::current_prefix;
 
@@ -226,7 +226,7 @@ pub fn remove_addon(addons_dir: String, folder: String) -> Result<(), String> {
 #[tauri::command]
 pub fn open_addons_folder(addons_dir: String) -> Result<(), String> {
     let dir = checked_addons_dir(&addons_dir)?;
-    Command::new("xdg-open")
+    crate::host_command("xdg-open")
         .arg(&dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -589,7 +589,7 @@ pub fn wowup_launch() -> Result<String, String> {
         return Err("WowUp is not installed yet".into());
     }
     let added = seed_wowup_installs()?;
-    let mut cmd = Command::new(&app);
+    let mut cmd = crate::host_command(&app);
     // AppImages need FUSE to mount themselves; fall back to extracting when it is missing.
     if !Path::new("/usr/lib/libfuse.so.2").exists() && !Path::new("/usr/lib64/libfuse.so.2").exists()
         && !Path::new("/usr/lib/x86_64-linux-gnu/libfuse.so.2").exists()

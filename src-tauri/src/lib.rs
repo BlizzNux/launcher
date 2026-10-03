@@ -15,6 +15,18 @@ pub(crate) fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
 }
 
+/// A command for a program of the host system. Inside an AppImage the start script points
+/// the library, Python and data paths into the image; host programs break on those (umu-run
+/// is Python and cannot start with the image's PYTHONHOME), so they get the environment
+/// without them and do not run from inside the mount.
+pub(crate) fn host_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    if let Some(appdir) = std::env::var("APPDIR").ok().filter(|d| !d.is_empty()) {
+        cmd.env_clear().envs(updates::env_outside_appimage(std::env::vars_os(), &appdir)).current_dir(home());
+    }
+    cmd
+}
+
 fn config_path() -> PathBuf {
     let base = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -84,7 +96,7 @@ async fn fetch_json(url: String) -> Result<serde_json::Value, String> {
 #[tauri::command]
 fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
     let script = script_path(&app).ok_or("blizznux-run not found (run install.sh)")?;
-    let mut cmd = Command::new(&script);
+    let mut cmd = host_command(&script);
     if let Some(code) = game.as_deref().filter(|g| !g.is_empty()) {
         if !code.chars().all(|c| c.is_ascii_alphanumeric()) {
             return Err("invalid game code".into());
@@ -108,7 +120,7 @@ fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
 
 fn run_script(app: &AppHandle, args: &[&str]) -> Result<String, String> {
     let script = script_path(app).ok_or("blizznux-run not found (run install.sh)")?;
-    let out = Command::new(&script)
+    let out = host_command(&script)
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -230,7 +242,7 @@ fn install_state() -> InstallState {
 #[tauri::command]
 fn install(app: AppHandle) -> Result<(), String> {
     let script = script_path(&app).ok_or("blizznux-run not found (run install.sh)")?;
-    let mut child = Command::new(&script)
+    let mut child = host_command(&script)
         .arg("install")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -531,7 +543,7 @@ async fn fix_apply(check: String) -> Result<String, String> {
     }
     let script = steps.iter().map(|s| format!("echo \"+ {s}\"; {s}")).collect::<Vec<_>>().join(" && ");
     tauri::async_runtime::spawn_blocking(move || {
-        let out = Command::new("pkexec")
+        let out = host_command("pkexec")
             .arg("sh")
             .arg("-c")
             .arg(&script)
@@ -561,7 +573,7 @@ fn open_external(url: String) -> Result<(), String> {
     if u.scheme() != "https" {
         return Err("only https links can be opened".into());
     }
-    Command::new("xdg-open")
+    host_command("xdg-open")
         .arg(u.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::null())

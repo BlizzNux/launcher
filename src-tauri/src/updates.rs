@@ -1,7 +1,6 @@
 // Self-update of the launcher (signed, AppImage builds) and a Battle.net version check.
 // GPL-3.0-or-later. Not affiliated with Blizzard Entertainment.
 use std::ffi::OsString;
-use std::process::Command;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
@@ -73,22 +72,15 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
     // This copy was started by the old image: its start script put the old mount into the
     // search paths, and the old mount helper waits on handles this process holds. Start the
     // new image without either, so the old one is released instead of staying mounted until quit.
-    let appdir = std::env::var("APPDIR").unwrap_or_default();
     keep_handles_out_of_children();
-    Command::new(image)
-        .args(std::env::args_os().skip(1))
-        .env_clear()
-        .envs(env_outside_appimage(std::env::vars_os(), &appdir))
-        .current_dir(crate::home())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    crate::host_command(image).args(std::env::args_os().skip(1)).spawn().map_err(|e| e.to_string())?;
     app.exit(0);
     Ok(())
 }
 
 /// The environment without what an AppImage's start script added: entries of a path list that
 /// point into the image's mount are dropped, and a variable left with nothing is removed.
-fn env_outside_appimage(vars: impl Iterator<Item = (OsString, OsString)>, appdir: &str) -> Vec<(OsString, OsString)> {
+pub(crate) fn env_outside_appimage(vars: impl Iterator<Item = (OsString, OsString)>, appdir: &str) -> Vec<(OsString, OsString)> {
     vars.filter_map(|(key, val)| {
         let Some(text) = val.to_str().filter(|t| !appdir.is_empty() && t.contains(appdir)) else {
             return Some((key, val));

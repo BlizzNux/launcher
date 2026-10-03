@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -186,7 +186,7 @@ fn game_by_code(code: &str) -> Option<&'static (&'static str, &'static str, &'st
 }
 
 fn run_capture(cmd: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new(cmd)
+    let mut child = crate::host_command(cmd)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
