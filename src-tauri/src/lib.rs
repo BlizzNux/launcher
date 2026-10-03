@@ -624,7 +624,29 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// KWin on Wayland finds a window's icon only through a desktop file named exactly like the
+/// window's app id (no StartupWMClass fallback, case-sensitive). GTK derives the app id from the
+/// program name, i.e. the binary "blizznux", which matches nothing: install.sh ships
+/// com.blizznux.launcher.desktop and the deb/rpm/AppImage bundles ship BlizzNux.desktop. So the
+/// program name is set to whichever of those is installed, before GTK initialises.
+fn set_app_id() {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    match std::env::var_os("XDG_DATA_HOME") {
+        Some(d) if !d.is_empty() => dirs.push(PathBuf::from(d)),
+        _ => dirs.push(home().join(".local/share")),
+    }
+    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    dirs.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
+    for id in ["com.blizznux.launcher", "BlizzNux"] {
+        if dirs.iter().any(|d| d.join("applications").join(format!("{id}.desktop")).is_file()) {
+            webkit2gtk::glib::set_prgname(Some(id));
+            return;
+        }
+    }
+}
+
 pub fn run() {
+    set_app_id();
     // WebKitGTK renders with hardware acceleration by default. If the forum view shows
     // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
