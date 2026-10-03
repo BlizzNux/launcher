@@ -69,8 +69,21 @@ Report types and when the launcher sends them:
 ### Response
 
 `201 Created` with `{ "url": "https://blizznux.com/d/123-…" }`, the discussion the report
-landed in. `429` when rate-limited (the launcher shows "try again later"), `400` with
-`{ "error": "…" }` for a malformed body.
+landed in. `429` when rate-limited, `400` with `{ "error": "…" }` for a malformed body.
+
+### Reports that could not be delivered
+
+A `run` report without `game.version` is never sent: the launcher tells the user it cannot
+read the game's build instead. A report the user chose to send (a prompt answer or "Report a
+problem") that does not get through is kept on disk, without the account token, and tried
+again each time the launcher starts, for up to a week:
+
+- no answer, `429` or `5xx`: the same body is sent again later, so `created_at` can be days
+  older than the arrival and a body whose first answer got lost can arrive twice;
+- `4xx` on a prompt answer: the answer is kept and built afresh by the next launcher version,
+  unless the game was patched in between; a refused bug report is not kept.
+
+Automatic reports are not kept.
 
 ## Account link (pairing)
 

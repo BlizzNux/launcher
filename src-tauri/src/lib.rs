@@ -643,19 +643,20 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
             let game = _rest.first().cloned();
             let outcome = _rest.get(1).cloned();
             let comment = _rest.get(2).cloned();
-            match reports::build_report(kind.into(), game, outcome, comment) {
-                Ok(body) => {
-                    println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
-                    if std::env::var_os("BLIZZNUX_SEND").is_some() {
-                        match tauri::async_runtime::block_on(reports::send_report(body)) {
-                            Ok(url) => Ok(format!("sent → {url}")),
-                            Err(e) => { eprintln!("send error: {e}"); return 1; }
-                        }
-                    } else { Ok(String::from("(not sent; set BLIZZNUX_SEND=1 to send)")) }
+            if std::env::var_os("BLIZZNUX_SEND").is_some() {
+                match tauri::async_runtime::block_on(reports::submit_report(kind.into(), game, outcome, comment)) {
+                    Ok(r) if r.sent => Ok(format!("sent → {}", r.url)),
+                    Ok(r) => Ok(format!("saved for later: {}", r.reason)),
+                    Err(e) => { eprintln!("send error: {e}"); return 1; }
                 }
-                Err(e) => { eprintln!("error: {e}"); return 1; }
+            } else {
+                match reports::build_report(kind.into(), game, outcome, comment) {
+                    Ok(body) => Ok(format!("{}\n(not sent; set BLIZZNUX_SEND=1 to send)", serde_json::to_string_pretty(&body).unwrap_or_default())),
+                    Err(e) => { eprintln!("error: {e}"); return 1; }
+                }
             }
         }
+        "flush-reports" => Ok(format!("{} sent", tauri::async_runtime::block_on(reports::flush_reports()))),
         _ => { eprintln!("unknown command"); return 2; }
     };
     match out {
@@ -765,6 +766,8 @@ pub fn run() {
             addons::wowup_remove,
             reports::build_report,
             reports::send_report,
+            reports::submit_report,
+            reports::flush_reports,
             reports::account_status,
             reports::link_start,
             reports::link_poll,

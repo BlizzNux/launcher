@@ -149,16 +149,19 @@ async function previewReport() {
     report.body = await invoke("build_report", { kind: report.kind, game: report.game?.code || null, outcome: report.outcome, comment: $("#report-comment").value });
     $("#report-preview").textContent = JSON.stringify(report.body, null, 2);
     $("#report-send").disabled = false;
-  } catch (e) { $("#report-status").textContent = String(e); }
+  } catch (e) { report.body = null; $("#report-preview").textContent = ""; $("#report-status").textContent = String(e); }
 }
 
 async function sendReport() {
   $("#report-send").disabled = true; $("#report-status").textContent = "Sending…";
   try {
-    await previewReport();
-    const url = await invoke("send_report", { report: report.body });
-    $("#report-status").textContent = url ? "Sent. Thank you." : "Sent.";
-    setTimeout(hidePanel, 1500);
+    const r = await invoke("submit_report", { kind: report.kind, game: report.game?.code || null, outcome: report.outcome, comment: $("#report-comment").value });
+    if (r.sent) {
+      $("#report-status").textContent = r.url ? "Sent. Thank you." : "Sent.";
+      setTimeout(hidePanel, 1500);
+    } else {
+      $("#report-status").textContent = `${r.reason} Saved: the launcher tries again each time it starts, for up to a week.`;
+    }
   } catch (e) { $("#report-status").textContent = String(e); $("#report-send").disabled = false; }
 }
 
@@ -421,6 +424,7 @@ async function init() {
   document.querySelectorAll(".outcome").forEach((b) => { b.onclick = async () => {
     document.querySelectorAll(".outcome").forEach((o) => o.classList.toggle("active", o === b));
     report.outcome = b.dataset.outcome;
+    $("#report-send").disabled = false;   // an answer that cannot be previewed can still be saved
     await previewReport();
     if (report.auto) sendReport();
   }; });
@@ -463,6 +467,7 @@ async function init() {
   if (st.installed && !acct.linked) startLogin(); else $("#site").src = FORUM;
   checkUpdate(version);
   checkBattlenet();
+  invoke("flush_reports").then((n) => { if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`); }).catch(() => {});
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
 }
 

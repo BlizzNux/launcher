@@ -703,8 +703,15 @@ fn log_tail(max_lines: usize) -> String {
     scrub(&lines[lines.len().saturating_sub(max_lines)..].join("\n"))
 }
 
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 fn now_iso() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    iso(now_secs())
+}
+
+fn iso(secs: u64) -> String {
     // civil-from-days (Howard Hinnant), good enough for a timestamp without a chrono dependency
     let days = (secs / 86400) as i64;
     let (h, m, s) = ((secs % 86400) / 3600, (secs % 3600) / 60, secs % 60);
@@ -721,11 +728,31 @@ fn now_iso() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
+/// Why a report could not be built: a request that makes no sense, or a game whose build the
+/// launcher cannot read (the site files run reports under the build and refuses one without).
+enum BuildError {
+    Invalid(String),
+    UnknownBuild(String),
+}
+
+impl BuildError {
+    fn text(self) -> String {
+        match self {
+            BuildError::Invalid(why) | BuildError::UnknownBuild(why) => why,
+        }
+    }
+}
+
 /// Build the JSON body for a report; the UI shows it before sending.
 #[tauri::command]
 pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, String> {
+    build(kind, game, outcome, comment).map_err(BuildError::text)
+}
+
+fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, BuildError> {
+    let invalid = |why: &str| BuildError::Invalid(why.into());
     if !matches!(kind.as_str(), "bug" | "run" | "launch") {
-        return Err("kind must be bug, run or launch".into());
+        return Err(invalid("kind must be bug, run or launch"));
     }
     let mut body = serde_json::json!({
         "schema": 1,
@@ -739,13 +766,13 @@ pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>,
     });
     if let Some(code) = game.as_deref().filter(|c| !c.is_empty()) {
         if let Some(g) = game_info(code) {
-            body["game"] = serde_json::to_value(g).map_err(|e| e.to_string())?;
+            body["game"] = serde_json::to_value(g).map_err(|e| invalid(&e.to_string()))?;
         }
     }
     if kind == "launch" {
         let o = outcome.unwrap_or_default();
         if !matches!(o.as_str(), "ok" | "failed") {
-            return Err("launch outcome must be ok or failed".into());
+            return Err(invalid("launch outcome must be ok or failed"));
         }
         body["target"] = serde_json::Value::String("battlenet".into());
         body["outcome"] = serde_json::Value::String(o.clone());
@@ -755,7 +782,13 @@ pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>,
     } else if kind == "run" {
         let o = outcome.unwrap_or_default();
         if !matches!(o.as_str(), "perfect" | "issues" | "broken" | "ok") {
-            return Err("outcome must be perfect, issues, broken or ok".into());
+            return Err(invalid("outcome must be perfect, issues, broken or ok"));
+        }
+        if body["game"]["version"].as_str().map_or(true, str::is_empty) {
+            let name = game.as_deref().and_then(game_by_code).map_or("the game", |g| g.1);
+            return Err(BuildError::UnknownBuild(format!(
+                "The launcher cannot tell which build of {name} is installed, so the site has nothing to file this report under. Please tell BlizzNux through \"Report a problem\" in Settings."
+            )));
         }
         body["outcome"] = serde_json::Value::String(o);
         body["comment"] = serde_json::Value::String(scrub(&comment.unwrap_or_default()).chars().take(2000).collect());
@@ -768,25 +801,186 @@ pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>,
     Ok(body)
 }
 
+/// Why a report was not delivered: the site refused this report, or the site could not take
+/// any right now (offline, rate limit, server trouble), which is worth another try later.
+enum SendError {
+    Refused(String),
+    Unreachable(String),
+}
+
 #[tauri::command]
 pub async fn send_report(report: serde_json::Value) -> Result<String, String> {
+    post_report(&report).await.map_err(|e| match e {
+        SendError::Refused(why) | SendError::Unreachable(why) => why,
+    })
+}
+
+async fn post_report(report: &serde_json::Value) -> Result<String, SendError> {
+    let offline = |_| SendError::Unreachable("The site could not be reached.".into());
     let client = reqwest::Client::builder()
         .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client.post(report_url()).json(&report).send().await.map_err(|e| e.to_string())?;
+        .map_err(offline)?;
+    let resp = client.post(report_url()).json(report).send().await.map_err(offline)?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if status.as_u16() == 429 {
-        return Err("the site is rate-limiting reports right now; try again later".into());
+        return Err(SendError::Unreachable("The site is not taking more reports right now.".into()));
+    }
+    if status.is_server_error() {
+        return Err(SendError::Unreachable(format!("The site had a problem (HTTP {}).", status.as_u16())));
     }
     if !status.is_success() {
         let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or(text);
-        return Err(format!("HTTP {}: {}", status.as_u16(), msg.chars().take(300).collect::<String>()));
+        return Err(SendError::Refused(format!("The site did not accept the report (HTTP {}: {}).", status.as_u16(), msg.chars().take(300).collect::<String>())));
     }
     let url = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["url"].as_str().map(String::from)).unwrap_or_default();
     Ok(url)
+}
+
+/// A report the user chose to send that has not reached the site yet: their answer, and the
+/// report as built at the time (without the account token) when it only has to be sent again.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Pending {
+    kind: String,
+    game: Option<String>,
+    outcome: Option<String>,
+    comment: Option<String>,
+    saved_at: u64,
+    /// The game build the answer was about; empty when the launcher could not read it.
+    build: String,
+    report: Option<serde_json::Value>,
+    /// The launcher version whose report the site refused; a later version builds it afresh.
+    refused_by: Option<String>,
+}
+
+/// How long an undelivered report is kept.
+const PENDING_SECS: u64 = 7 * 86400;
+
+fn outbox_dir() -> PathBuf {
+    std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".local/share")).join("blizznux").join("outbox")
+}
+
+fn save_pending(path: &Path, pending: &Pending) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(pending).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct Submitted {
+    pub sent: bool,
+    pub url: String,
+    /// Why the report was kept for later instead.
+    pub reason: String,
+}
+
+/// Send a report the user asked for. One that cannot go out now (site unreachable or refusing,
+/// game build unknown) is kept in the outbox and tried again on later starts.
+#[tauri::command]
+pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<Submitted, String> {
+    let mut pending = Pending {
+        kind: kind.clone(),
+        game: game.clone(),
+        outcome: outcome.clone(),
+        comment: comment.clone(),
+        saved_at: now_secs(),
+        build: String::new(),
+        report: None,
+        refused_by: None,
+    };
+    let reason = match build(kind, game, outcome, comment) {
+        Ok(mut body) => match post_report(&body).await {
+            Ok(url) => return Ok(Submitted { sent: true, url, reason: String::new() }),
+            Err(e) => {
+                pending.build = body["game"]["version"].as_str().unwrap_or_default().to_string();
+                match e {
+                    SendError::Unreachable(why) => {
+                        if let Some(fields) = body.as_object_mut() {
+                            fields.remove("user_token");
+                        }
+                        pending.report = Some(body);
+                        why
+                    }
+                    // A refused answer waits for a launcher whose report the site takes; a
+                    // refused bug report would carry another log by then.
+                    SendError::Refused(why) if pending.kind == "run" => {
+                        pending.refused_by = Some(env!("CARGO_PKG_VERSION").into());
+                        why
+                    }
+                    SendError::Refused(why) => return Err(why),
+                }
+            }
+        },
+        Err(BuildError::UnknownBuild(why)) => why,
+        Err(BuildError::Invalid(why)) => return Err(why),
+    };
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    save_pending(&outbox_dir().join(format!("{nanos}.json")), &pending)?;
+    Ok(Submitted { sent: false, url: String::new(), reason })
+}
+
+/// Try the outbox again (the UI asks once per start); returns how many reports got through.
+#[tauri::command]
+pub async fn flush_reports() -> usize {
+    let mut files: Vec<PathBuf> = fs::read_dir(outbox_dir())
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "json")).collect())
+        .unwrap_or_default();
+    files.sort();
+    let mut sent = 0;
+    for path in files {
+        let discard = || { let _ = fs::remove_file(&path); };
+        let Some(mut pending) = fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Pending>(&b).ok()) else { discard(); continue };
+        if now_secs().saturating_sub(pending.saved_at) > PENDING_SECS {
+            discard();
+            continue;
+        }
+        if pending.refused_by.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+            continue;
+        }
+        let body = match pending.report.take() {
+            Some(mut body) => {
+                let Some(fields) = body.as_object_mut() else { discard(); continue };
+                fields.insert("user_token".into(), load_config().get("USER_TOKEN").cloned().unwrap_or_default().into());
+                body
+            }
+            None => match build(pending.kind.clone(), pending.game.clone(), pending.outcome.clone(), pending.comment.clone()) {
+                // The answer was about the build installed then; a game patched since is another one.
+                Ok(body) if !pending.build.is_empty() && body["game"]["version"].as_str() != Some(pending.build.as_str()) => { discard(); continue }
+                Ok(mut body) => {
+                    body["created_at"] = iso(pending.saved_at).into();
+                    body
+                }
+                Err(BuildError::UnknownBuild(_)) => continue,
+                Err(BuildError::Invalid(_)) => { discard(); continue }
+            },
+        };
+        match post_report(&body).await {
+            Ok(_) => {
+                discard();
+                sent += 1;
+            }
+            Err(SendError::Unreachable(_)) => break,
+            Err(SendError::Refused(why)) => {
+                eprintln!("[report] saved {} report refused: {why}", pending.kind);
+                if pending.kind == "run" {
+                    pending.refused_by = Some(env!("CARGO_PKG_VERSION").into());
+                    let _ = save_pending(&path, &pending);
+                } else {
+                    discard();
+                }
+            }
+        }
+    }
+    sent
 }
 
 /// Successful automatic reports are sent at most once per day per build; failures always.
