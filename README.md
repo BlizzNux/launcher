@@ -33,6 +33,9 @@ npm run dev      # run with live reload
 npm run build    # AppImage, deb and rpm under src-tauri/target/release/bundle/
 ```
 
+Released bundles are built with `scripts/container-build.sh`, inside an Ubuntu 22.04 container
+(needs Docker), so that they also run on distributions older than the build machine.
+
 Tested on CachyOS with Proton-CachyOS and a hybrid AMD + NVIDIA laptop. Other distributions
 are best effort; please report what you find. Guides and the compatibility list live on the
 [BlizzNux wiki](https://blizznux.com/wiki).
