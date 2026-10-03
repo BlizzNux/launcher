@@ -111,6 +111,9 @@ gpu_env() {
 		export __GL_SHADER_DISK_CACHE_SIZE=${__GL_SHADER_DISK_CACHE_SIZE:-10737418240}
 		export __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=${__GL_SHADER_DISK_CACHE_SKIP_CLEANUP:-1}
 		mkdir -p "$__GL_SHADER_DISK_CACHE_PATH" 2>/dev/null || true
+		# The driver keeps every shader pipeline DXVK creates in memory, and a large game grew to 19 GB
+		# that way. Let DXVK free the ones a game no longer uses. A DXVK_CONFIG set by the user wins.
+		export DXVK_CONFIG="${DXVK_CONFIG:-dxvk.trackPipelineLifetime = True}"
 	fi
 	case $OFFLOAD in
 	off) return ;;
