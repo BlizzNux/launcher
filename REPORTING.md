@@ -150,20 +150,8 @@ Per IP: 60 per hour. Body limit 256 KB.
 
 ## Profile fields (Masquerade)
 
-The site, not the launcher, keeps the user's public profile fields equal to the machine the
-reports come from. On every accepted `POST /api/launcher/reports` whose `user_token` resolves to
-a linked account, the site reads `system` (`distro`, `kernel`, `gpus[].vendor/name/driver`,
-`proton`) and writes the Masquerade answers for the fields named `Distro`, `Kernel`, `GPU`,
-`GPU driver` and `Proton / Wine`, matched by name. Fields that are renamed or removed are
-skipped, a missing value never blanks a field, and errors never fail the report.
-
-Formatting on the site: GPUs and drivers joined with ` + `, PCI ids and vendor boilerplate
-trimmed (`NVIDIA GeForce RTX 4060 Max-Q / Mobile + AMD Phoenix1`), `NVIDIA <version>` for the
-proprietary driver and `Mesa <version>` otherwise, and `Proton <build>` for bare Proton names
-(`Proton cachyos-11.0-20260703-slr`).
-
-The site runs this for every report type, bug reports included, because it only knows the
-token, not the sharing switch. Automatic `launch`/`run` reports leave the launcher only while
-sharing is on, so a user who declined sharing is published only if they file a bug report
-themselves (previewed, with the setup visible). The launcher has no profile writer of its own; an earlier launcher-side version was removed in favour of this (it needed the Masquerade
-`have-profile` permission, which members on blizznux.com do not have).
+Site side only. On each accepted report from a linked account the site writes the Masquerade
+fields `Distro`, `Kernel`, `GPU`, `GPU driver` and `Proton / Wine` from `system`, matched by
+name; missing values never blank a field and errors never fail the report. The launcher has no
+profile writer (an earlier one was removed: it needed the Masquerade `have-profile` permission,
+which members do not have).
