@@ -50,7 +50,7 @@ local stub); the default is the URL above.
   "target": "battlenet",        // launch reports only
   "outcome": "perfect" | "issues" | "broken" | "ok" | "failed",
   "comment": "free text from the user, may be empty",
-  "log": "last ~200 lines of the launcher log, bug reports only, paths scrubbed"
+  "log": "last ~200 lines of the launcher log (repeats folded as \"(×N) …\"), bug reports only, paths scrubbed"
 }
 ```
 

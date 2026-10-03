@@ -513,6 +513,93 @@ fn scrub(text: &str) -> String {
     text.replace(&h, "~")
 }
 
+/// How many raw log lines are looked at, and the longest repeating block that gets folded.
+const LOG_WINDOW: usize = 4000;
+const MAX_BLOCK: usize = 8;
+
+/// What two log lines have in common when they differ only in numbers and paths.
+fn line_shape(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() {
+            if c == '0' && chars.peek() == Some(&'x') {
+                chars.next();
+                while chars.peek().is_some_and(|n| n.is_ascii_hexdigit()) {
+                    chars.next();
+                }
+            } else {
+                while chars.peek().is_some_and(|n| n.is_ascii_digit()) {
+                    chars.next();
+                }
+            }
+            out.push('#');
+        } else if c == '/' {
+            while chars.peek().is_some_and(|n| !n.is_whitespace() && *n != '\'' && *n != '"') {
+                chars.next();
+            }
+            out.push('/');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Folds log noise so the tail of a report holds distinct lines: blank lines go, the harmless
+/// GStreamer plugin notices get a plain wording, and a line (or a block of up to MAX_BLOCK
+/// lines) repeated three or more times in a row is kept once with a count.
+fn condense_log(text: &str) -> Vec<String> {
+    let all: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<String> = all[all.len().saturating_sub(LOG_WINDOW)..]
+        .iter()
+        .map(|l| {
+            // Proton lists its 32-bit and 64-bit plugin folders for both kinds of process, so
+            // each one warns once per plugin of the other kind. Nothing failed.
+            if l.contains("GStreamer-WARNING") && l.contains("wrong ELF class") {
+                "GStreamer skipped a plugin built for the other CPU architecture (harmless)".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    let shapes: Vec<String> = lines.iter().map(|l| line_shape(l)).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let mut folded = false;
+        for p in 1..=MAX_BLOCK.min((lines.len() - i) / 3) {
+            let mut reps = 1;
+            while i + (reps + 1) * p <= lines.len() && shapes[i + reps * p..i + (reps + 1) * p] == shapes[i..i + p] {
+                reps += 1;
+            }
+            if reps >= 3 {
+                if p == 1 {
+                    out.push(format!("(×{reps}) {}", lines[i]));
+                } else {
+                    out.push(format!("(×{reps}, the next {p} lines)"));
+                    out.extend(lines[i..i + p].iter().cloned());
+                }
+                i += reps * p;
+                folded = true;
+                break;
+            }
+        }
+        if !folded {
+            out.push(lines[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The end of the launcher log as attached to a report: folded, then cut, then scrubbed.
+fn log_tail(max_lines: usize) -> String {
+    let log = fs::read_to_string(crate::log_path()).unwrap_or_default();
+    let lines = condense_log(&log);
+    scrub(&lines[lines.len().saturating_sub(max_lines)..].join("\n"))
+}
+
 fn now_iso() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // civil-from-days (Howard Hinnant), good enough for a timestamp without a chrono dependency
@@ -560,9 +647,7 @@ pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>,
         body["target"] = serde_json::Value::String("battlenet".into());
         body["outcome"] = serde_json::Value::String(o.clone());
         if o == "failed" {
-            let log = fs::read_to_string(crate::log_path()).unwrap_or_default();
-            let lines: Vec<&str> = log.lines().collect();
-            body["log"] = serde_json::Value::String(scrub(&lines[lines.len().saturating_sub(120)..].join("\n")));
+            body["log"] = serde_json::Value::String(log_tail(120));
         }
     } else if kind == "run" {
         let o = outcome.unwrap_or_default();
@@ -572,10 +657,7 @@ pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>,
         body["outcome"] = serde_json::Value::String(o);
         body["comment"] = serde_json::Value::String(scrub(&comment.unwrap_or_default()).chars().take(2000).collect());
     } else {
-        let log = fs::read_to_string(crate::log_path()).unwrap_or_default();
-        let lines: Vec<&str> = log.lines().collect();
-        let tail = lines[lines.len().saturating_sub(200)..].join("\n");
-        body["log"] = serde_json::Value::String(scrub(&tail));
+        body["log"] = serde_json::Value::String(log_tail(200));
         if let Some(c) = comment.filter(|c| !c.is_empty()) {
             body["comment"] = serde_json::Value::String(scrub(&c).chars().take(2000).collect());
         }
@@ -735,4 +817,64 @@ pub fn watch_game(app: AppHandle, code: Option<String>) {
         auto_report(&app, "run", Some(g.0.to_string()), "ok", format!("ran for {} min", secs / 60));
         let _ = app.emit("game-ended", serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identical_lines_fold_into_one() {
+        let out = condense_log("start\nsame\nsame\nsame\nsame\nend\n");
+        assert_eq!(out, vec!["start", "(×4) same", "end"]);
+    }
+
+    #[test]
+    fn a_pair_is_left_alone() {
+        let out = condense_log("a\nb\nb\nc\n");
+        assert_eq!(out, vec!["a", "b", "b", "c"]);
+    }
+
+    #[test]
+    fn gstreamer_burst_becomes_one_plain_line() {
+        let mut log = String::from("Proton: starting\n");
+        for (i, name) in ["accurip", "adaptivedemux2", "alaw", "app"].iter().enumerate() {
+            log.push_str(&format!(
+                "(wine:253103): GStreamer-WARNING **: 19:32:01.98{i}: Failed to load plugin '/p/x86_64-linux-gnu/gstreamer-1.0/libgst{name}.so': /p/x86_64-linux-gnu/gstreamer-1.0/libgst{name}.so: wrong ELF class: ELFCLASS64\r\n\r\n"
+            ));
+        }
+        log.push_str("err: the real problem\n");
+        let out = condense_log(&log);
+        assert_eq!(
+            out,
+            vec![
+                "Proton: starting",
+                "(×4) GStreamer skipped a plugin built for the other CPU architecture (harmless)",
+                "err: the real problem",
+            ]
+        );
+    }
+
+    #[test]
+    fn lines_differing_in_numbers_and_paths_fold() {
+        let out = condense_log("fixme at 0x00a1 in /a/b.so pid 12\nfixme at 0x7f in /c/d.so pid 3456\nfixme at 0x0 in /e.so pid 7\n");
+        assert_eq!(out, vec!["(×3) fixme at 0x00a1 in /a/b.so pid 12"]);
+    }
+
+    #[test]
+    fn repeated_block_is_kept_once() {
+        let block = "Unhandled exception in Xalia:\nTaskCanceledException: A task was canceled.\n  at Xalia.Utils.DoRunTask\n";
+        let out = condense_log(&format!("before\n{block}{block}{block}after\n"));
+        assert_eq!(
+            out,
+            vec![
+                "before",
+                "(×3, the next 3 lines)",
+                "Unhandled exception in Xalia:",
+                "TaskCanceledException: A task was canceled.",
+                "  at Xalia.Utils.DoRunTask",
+                "after",
+            ]
+        );
+    }
 }
