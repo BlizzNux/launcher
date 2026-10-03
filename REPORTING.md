@@ -150,25 +150,20 @@ Per IP: 60 per hour. Body limit 256 KB.
 
 ## Profile fields (Masquerade)
 
-Separate from reports, the launcher keeps the user's public profile fields on the site equal
-to the machine it runs on. No launcher-specific endpoint is involved: it uses the site's own
-FoF Masquerade API as the user who is logged in inside the embedded view, so the site's
-permissions (`fof.masquerade.have-profile`) decide whether the write is allowed.
+The site, not the launcher, keeps the user's public profile fields equal to the machine the
+reports come from. On every accepted `POST /api/launcher/reports` whose `user_token` resolves to
+a linked account, the site reads `system` (`distro`, `kernel`, `gpus[].vendor/name/driver`,
+`proton`) and writes the Masquerade answers for the fields named `Distro`, `Kernel`, `GPU`,
+`GPU driver` and `Proton / Wine`, matched by name. Fields that are renamed or removed are
+skipped, a missing value never blanks a field, and errors never fail the report.
 
-- Fields are matched by **name**, case-insensitively, with a few aliases: `Distro`, `Kernel`,
-  `GPU`, `GPU driver`, `Proton / Wine`. Only `text` (and `url`) fields are written; fields the
-  site does not define are skipped, and other fields on the profile are left untouched.
-- Values: distro = `PRETTY_NAME`; kernel = `uname -r`; GPU = tidied lspci names joined with
-  ` + ` (e.g. `NVIDIA GeForce RTX 4060 Max-Q / Mobile + AMD Phoenix1`); GPU driver = `NVIDIA <version>`
-  and/or the Mesa version from `vulkaninfo`; Proton / Wine = the Proton build the launcher uses.
-- Requests: `GET /api` with the embedded view's cookies for the CSRF token and the field list
-  (`included[type=masquerade-fields]`), `GET /api/users/<name>?bySlug=1` for the user id, then
-  `POST /api/masquerade-answers/configure/<id>` with `{"<field id>": "<value>", …}` and
-  `X-CSRF-Token`. A field left out of the body is not changed by Masquerade.
-- When: at every launcher start while linked, after the inline sharing answer, and after
-  Settings are saved. A fingerprint of the five values is kept in the launcher config
-  (`PROFILE_SYNCED`); nothing is sent while it is unchanged. "Update the profile now" in
-  Settings forces a write.
-- Switch: `PROFILE_SYNC=1|0` in the launcher config, shown in Settings. When the key is absent
-  it follows the sharing answer, so a user who declined sharing is not published either.
-  Logging out clears both keys.
+Formatting on the site: GPUs and drivers joined with ` + `, PCI ids and vendor boilerplate
+trimmed (`NVIDIA GeForce RTX 4060 Max-Q / Mobile + AMD Phoenix1`), `NVIDIA <version>` for the
+proprietary driver and `Mesa <version>` otherwise, and `Proton <build>` for bare Proton names
+(`Proton cachyos-11.0-20260703-slr`).
+
+The site runs this for every report type, bug reports included, because it only knows the
+token, not the sharing switch. Automatic `launch`/`run` reports leave the launcher only while
+sharing is on, so a user who declined sharing is published only if they file a bug report
+themselves (previewed, with the setup visible). The launcher has no profile writer of its own; an earlier launcher-side version was removed in favour of this (it needed the Masquerade
+`have-profile` permission, which members on blizznux.com do not have).

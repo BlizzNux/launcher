@@ -136,8 +136,9 @@ compatibility list reflects real machines.
   removed. Everything is shown before it is sent; what the site stores is described in
   [REPORTING.md](REPORTING.md).
 - **Profile fields.** Your blizznux.com profile has fields for Distro, Kernel, GPU, GPU driver
-  and Proton / Wine. Once linked, the launcher keeps them equal to this machine, writing only
-  when something changed. Turn it off under Settings, or press "Update the profile now" there.
+  and Proton / Wine. With sharing on, the site fills them from your launch and run reports, so
+  they follow the machine you play on. A bug report you send yourself refreshes them too, since
+  it carries the same setup; automatic reports only leave the launcher while sharing is on.
 - **Logging out** under Settings removes the token from this machine. The account itself is
   untouched; the site lists your linked installs on your profile.
 
