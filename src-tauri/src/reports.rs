@@ -549,7 +549,7 @@ fn line_shape(line: &str) -> String {
 /// Folds log noise so the tail of a report holds distinct lines: blank lines go, the harmless
 /// GStreamer plugin notices get a plain wording, and a line (or a block of up to MAX_BLOCK
 /// lines) repeated three or more times in a row is kept once with a count.
-fn condense_log(text: &str) -> Vec<String> {
+pub(crate) fn condense_log(text: &str) -> Vec<String> {
     let all: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
     let lines: Vec<String> = all[all.len().saturating_sub(LOG_WINDOW)..]
         .iter()

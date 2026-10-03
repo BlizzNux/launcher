@@ -1,5 +1,7 @@
 // Self-update of the launcher (signed, AppImage builds) and a Battle.net version check.
 // GPL-3.0-or-later. Not affiliated with Blizzard Entertainment.
+use std::ffi::OsString;
+use std::process::Command;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
@@ -67,7 +69,46 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
         )
         .await
         .map_err(|e| e.to_string())?;
-    app.restart();
+    let Some(image) = std::env::var_os("APPIMAGE") else { app.restart() };
+    // This copy was started by the old image: its start script put the old mount into the
+    // search paths, and the old mount helper waits on handles this process holds. Start the
+    // new image without either, so the old one is released instead of staying mounted until quit.
+    let appdir = std::env::var("APPDIR").unwrap_or_default();
+    keep_handles_out_of_children();
+    Command::new(image)
+        .args(std::env::args_os().skip(1))
+        .env_clear()
+        .envs(env_outside_appimage(std::env::vars_os(), &appdir))
+        .current_dir(crate::home())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    app.exit(0);
+    Ok(())
+}
+
+/// The environment without what an AppImage's start script added: entries of a path list that
+/// point into the image's mount are dropped, and a variable left with nothing is removed.
+fn env_outside_appimage(vars: impl Iterator<Item = (OsString, OsString)>, appdir: &str) -> Vec<(OsString, OsString)> {
+    vars.filter_map(|(key, val)| {
+        let Some(text) = val.to_str().filter(|t| !appdir.is_empty() && t.contains(appdir)) else {
+            return Some((key, val));
+        };
+        let kept: Vec<&str> = text.split(':').filter(|p| !p.is_empty() && !p.starts_with(appdir)).collect();
+        if kept.is_empty() { None } else { Some((key, kept.join(":").into())) }
+    })
+    .collect()
+}
+
+/// The AppImage runtime hands the app an open handle on its mount and the pipe its mount
+/// helper waits on, and children inherit both. Mark every open handle except the standard
+/// three, so that nothing of the old image is passed on to the next one.
+fn keep_handles_out_of_children() {
+    let Ok(fds) = std::fs::read_dir("/proc/self/fd") else { return };
+    for n in fds.flatten().filter_map(|fd| fd.file_name().to_string_lossy().parse::<i32>().ok()) {
+        if n > 2 {
+            unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -102,4 +143,35 @@ pub async fn battlenet_update_check() -> Result<BattlenetUpdate, String> {
     };
     let available = !installed.is_empty() && newer(&latest, &installed);
     Ok(BattlenetUpdate { installed, latest, available })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clean(vars: &[(&str, &str)]) -> Vec<(String, String)> {
+        let vars = vars.iter().map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        env_outside_appimage(vars, "/tmp/.mount_old")
+            .into_iter()
+            .map(|(k, v)| (k.into_string().unwrap(), v.into_string().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn mount_entries_leave_path_lists() {
+        let out = clean(&[("PATH", "/tmp/.mount_old/usr/bin/:/tmp/.mount_old/bin/:/usr/local/bin:/usr/bin")]);
+        assert_eq!(out, vec![("PATH".to_string(), "/usr/local/bin:/usr/bin".to_string())]);
+    }
+
+    #[test]
+    fn variables_left_empty_are_removed() {
+        let out = clean(&[("APPDIR", "/tmp/.mount_old"), ("LD_LIBRARY_PATH", "/tmp/.mount_old/usr/lib/:/tmp/.mount_old/lib/:"), ("HOME", "/home/u")]);
+        assert_eq!(out, vec![("HOME".to_string(), "/home/u".to_string())]);
+    }
+
+    #[test]
+    fn nothing_changes_outside_an_appimage() {
+        let vars = [(OsString::from("PATH"), OsString::from("/usr/bin::/bin"))];
+        assert_eq!(env_outside_appimage(vars.clone().into_iter(), ""), vars.to_vec());
+    }
 }

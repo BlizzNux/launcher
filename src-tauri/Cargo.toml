@@ -26,3 +26,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"
 soup3 = "0.5"
+libc = "0.2"

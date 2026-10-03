@@ -574,7 +574,7 @@ fn open_external(url: String) -> Result<(), String> {
 #[tauri::command]
 fn read_log() -> String {
     let text = fs::read_to_string(log_path()).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
+    let lines = reports::condense_log(&text);
     let start = lines.len().saturating_sub(200);
     lines[start..].join("\n")
 }
