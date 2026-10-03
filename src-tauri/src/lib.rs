@@ -143,7 +143,14 @@ fn run_script(app: &AppHandle, args: &[&str]) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    if out.status.success() { Ok(text) } else { Err(text) }
+    let text = text.trim().to_string();
+    // The commands that run Proton write to the log instead of answering here.
+    match (out.status.success(), text.is_empty()) {
+        (true, false) => Ok(text),
+        (true, true) => Ok("Done. Details are in the log.".into()),
+        (false, false) => Err(text),
+        (false, true) => Err("That did not work. Show the log for details.".into()),
+    }
 }
 
 #[tauri::command]

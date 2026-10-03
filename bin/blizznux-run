@@ -47,21 +47,25 @@ Game codes for --game: WoW, WTCG (Hearthstone), Hero (Heroes of the Storm), Pro 
 USAGE
 }
 
+LOGGING=""
 log() { printf '[%s] %s\n' "$APP" "$*" >&2; }
 die() {
 	log "error: $*"
-	if [[ ! -t 2 ]] && command -v notify-send >/dev/null; then
+	if [[ -n $LOGGING ]] && command -v notify-send >/dev/null; then
 		notify-send -a BlizzNux -i com.blizznux.launcher "BlizzNux" "$*" 2>/dev/null || true
 	fi
 	exit 1
 }
 
-# Started from the app menu (no terminal): keep a log instead of losing the output.
-if [[ ! -t 2 ]]; then
+# Started without a terminal (the app, the menu entry): the commands that run Proton keep a log
+# instead of losing the output. The short commands print as usual, so the app can show their answer.
+keep_log() {
+	[[ ! -t 2 ]] || return 0
 	mkdir -p "$CACHE_DIR"
 	exec >>"$CACHE_DIR/blizznux.log" 2>&1
 	printf '\n=== %s ===\n' "$(date -Is)"
-fi
+	LOGGING=1
+}
 
 load_config() {
 	[[ -f $CONFIG ]] || return 0
@@ -221,10 +225,10 @@ while (( $# )); do
 	shift
 done
 case $cmd in
-launch) cmd_launch ;;
-install) cmd_install ;;
+launch) keep_log; cmd_launch ;;
+install) keep_log; cmd_install ;;
 import) cmd_import "${1:-}" ;;
-dpi) cmd_dpi "${1:-}" ;;
+dpi) keep_log; cmd_dpi "${1:-}" ;;
 umu) cmd_umu ;;
 doctor) cmd_doctor ;;
 esac
