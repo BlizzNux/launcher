@@ -63,7 +63,7 @@ Report types and when the launcher sends them:
 | type | when | outcome | sent |
 |------|------|---------|------|
 | `launch` | the user pressed Launch; Battle.net appeared within 2 min (`ok`) or did not (`failed`, with log) | `ok` / `failed` | automatically, only when the user opted into sharing; `ok` at most once per day per Battle.net build per install, `failed` always |
-| `run` | a game session ended after ≥ 60 s (`ok`), or the game vanished within 60 s (`broken`) | `ok` / `broken` automatically; `perfect` / `issues` / `broken` when the user answers the prompt | automatic ones only when sharing (`ok` at most once per day per game build per install, `broken` always); prompt answers always, after a preview unless the user turned previews off |
+| `run` | a game session ended after ≥ 60 s (`ok`). A session of under 60 s sends nothing by itself, because a lost connection to Blizzard, a login queue and quitting look the same as a crash; the launcher shows the prompt instead | `ok` automatically; `perfect` / `issues` / `broken` when the user answers the prompt | the automatic `ok` only when sharing, at most once per day per game build per install; prompt answers always, after a preview unless the user turned previews off |
 | `bug` | the user chose "Report a problem", or a launch failed and they confirmed | — | after a preview |
 
 ### Response

@@ -1104,21 +1104,32 @@ pub fn watch_game(app: AppHandle, code: Option<String>) {
             }
         }
         let secs = began.elapsed().as_secs();
-        if secs < 60 {
-            // Gone within a minute: treat as a failed start and record it (when sharing).
-            auto_report(&app, "run", Some(g.0.to_string()), "broken", format!("{} exited after {secs} s", g.1));
-            let _ = app.emit("game-crashed", serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
-            return;
+        let (event, record_ok) = session_end(secs);
+        if record_ok {
+            auto_report(&app, "run", Some(g.0.to_string()), "ok", format!("ran for {} min", secs / 60));
         }
-        // A real session: record the successful run (when sharing), then ask for details.
-        auto_report(&app, "run", Some(g.0.to_string()), "ok", format!("ran for {} min", secs / 60));
-        let _ = app.emit("game-ended", serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
+        let _ = app.emit(event, serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
     });
+}
+
+/// What the end of a game session means: the event the UI gets, and whether a successful run is
+/// recorded automatically (when sharing). A session of under a minute proves nothing either way:
+/// a lost connection to Blizzard, a login queue and the user quitting all look the same as a
+/// crash. So it is never reported by itself; the UI asks instead.
+fn session_end(secs: u64) -> (&'static str, bool) {
+    if secs < 60 { ("game-closed-early", false) } else { ("game-ended", true) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_session_is_never_reported_by_itself() {
+        assert_eq!(session_end(0), ("game-closed-early", false));
+        assert_eq!(session_end(59), ("game-closed-early", false));
+        assert_eq!(session_end(60), ("game-ended", true));
+    }
 
     #[test]
     fn product_db_gives_the_installed_version() {

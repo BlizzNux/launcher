@@ -165,6 +165,13 @@ async function sendReport() {
   } catch (e) { $("#report-status").textContent = String(e); $("#report-send").disabled = false; }
 }
 
+// A session of under a minute is never reported by itself: a lost connection, a login queue and
+// quitting look the same as a crash. Ask, and send only what the user picks.
+async function onGameClosedEarly(ev) {
+  const g = ev.payload || {};
+  await openReport("run", { code: g.code, name: g.name }, `${g.name} closed after ${g.seconds} seconds. If it crashed or would not start, choose Broken. If you closed it yourself or lost the connection to Blizzard, close this and nothing is sent.`);
+}
+
 async function onGameEnded(ev) {
   const g = ev.payload || {};
   const mins = Math.round((g.seconds || 0) / 60);
@@ -432,7 +439,7 @@ async function init() {
   $("#report-skip").onclick = hidePanel;
   $("#report-comment").addEventListener("change", () => { if (report.body) previewReport(); });
   window.__TAURI__.event.listen("game-ended", onGameEnded);
-  window.__TAURI__.event.listen("game-crashed", (e) => { const g = e.payload || {}; status(`${g.name} closed after ${g.seconds} s.${account.sharing ? " Recorded." : ""}`, true); });
+  window.__TAURI__.event.listen("game-closed-early", onGameClosedEarly);
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
   $("#acct-link").onclick = () => { hidePanel(); startLogin(); };
