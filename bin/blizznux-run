@@ -104,10 +104,11 @@ hybrid_nvidia() {
 
 gpu_env() {
 	# The NVIDIA driver stops storing shaders once its shared cache reaches the size limit, and a large
-	# game then compiles the rest again at every start. The launcher keeps its own cache without a limit,
-	# in a folder no other program cleans up. Values set by the user win.
+	# game then compiles the rest again at every start. The launcher keeps its own cache with a 10 GB
+	# limit, in a folder no other program cleans up. Values set by the user win.
 	if [[ -d /proc/driver/nvidia ]]; then
 		export __GL_SHADER_DISK_CACHE_PATH=${__GL_SHADER_DISK_CACHE_PATH:-$CACHE_DIR/shader-cache}
+		export __GL_SHADER_DISK_CACHE_SIZE=${__GL_SHADER_DISK_CACHE_SIZE:-10737418240}
 		export __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=${__GL_SHADER_DISK_CACHE_SKIP_CLEANUP:-1}
 		mkdir -p "$__GL_SHADER_DISK_CACHE_PATH" 2>/dev/null || true
 	fi
