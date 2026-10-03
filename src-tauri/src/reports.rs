@@ -420,12 +420,55 @@ fn build_info(path: &Path) -> Option<Vec<BTreeMap<String, String>>> {
     Some(rows)
 }
 
+/// First length-delimited value of `field` in a protobuf message (no schema, no parser crate).
+fn pb_field(mut buf: &[u8], field: u64) -> Option<&[u8]> {
+    fn varint(buf: &mut &[u8]) -> Option<u64> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let (&b, rest) = buf.split_first()?;
+            *buf = rest;
+            v |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 { return Some(v); }
+        }
+        None
+    }
+    while !buf.is_empty() {
+        let key = varint(&mut buf)?;
+        let len = match key & 7 {
+            0 => { varint(&mut buf)?; continue; }
+            1 => 8,
+            2 => usize::try_from(varint(&mut buf)?).ok()?,
+            5 => 4,
+            _ => return None,
+        };
+        if len > buf.len() { return None; }
+        let (value, rest) = buf.split_at(len);
+        buf = rest;
+        if key >> 3 == field && key & 7 == 2 { return Some(value); }
+    }
+    None
+}
+
+/// Installed version from Battle.net's `.product.db` install record (protobuf:
+/// cached_product_state → base_product_state → current_version_str).
+fn product_db_version(bytes: &[u8]) -> Option<String> {
+    let version = pb_field(pb_field(pb_field(bytes, 4)?, 1)?, 7)?;
+    let version = std::str::from_utf8(version).ok()?.trim();
+    if version.is_empty() { None } else { Some(version.to_string()) }
+}
+
 pub fn game_info(code: &str) -> Option<GameInfo> {
     let g = game_by_code(code)?;
     let root = current_prefix().join("drive_c/Program Files (x86)").join(g.2);
     let rows = build_info(&root.join(".build.info")).unwrap_or_default();
     let row = rows.iter().find(|r| r.get("Active").map(|a| a == "1").unwrap_or(false)).or_else(|| rows.first());
-    let version = row.and_then(|r| r.get("Version")).cloned().unwrap_or_default();
+    // Hearthstone has no `.build.info`; its version only lives in `.product.db`.
+    let version = row
+        .and_then(|r| r.get("Version"))
+        .filter(|v| !v.is_empty())
+        .cloned()
+        .or_else(|| fs::read(root.join(".product.db")).ok().and_then(|b| product_db_version(&b)))
+        .unwrap_or_default();
     let product = row.and_then(|r| r.get("Product")).cloned().unwrap_or_default();
     let flavor = match product.as_str() {
         "wow" => "_retail_",
@@ -823,6 +866,21 @@ pub fn watch_game(app: AppHandle, code: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_db_gives_the_installed_version() {
+        let version = b"36.6.3.253932.253216";
+        let mut base = vec![0x08, 1, 0x10, 1, 0x18, 1, 0x20, 0, 0x28, 0, 0x3a, version.len() as u8];
+        base.extend_from_slice(version);
+        let mut cached = vec![0x0a, base.len() as u8];
+        cached.extend_from_slice(&base);
+        let mut db = b"\x0a\x07hs_beta\x12\x03hsb".to_vec();
+        db.extend_from_slice(&[0x22, cached.len() as u8]);
+        db.extend_from_slice(&cached);
+        assert_eq!(product_db_version(&db).as_deref(), Some("36.6.3.253932.253216"));
+        assert_eq!(product_db_version(&db[..db.len() - 5]), None);
+        assert_eq!(product_db_version(b"\x0a\x07hs_beta"), None);
+    }
 
     #[test]
     fn identical_lines_fold_into_one() {
