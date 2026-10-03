@@ -147,3 +147,28 @@ Per IP: 60 per hour. Body limit 256 KB.
 - Linked reports in threads carry a "by @name" byline; the Updates tag permissions stay as they are.
 - Automatic `ok` runs are aggregated per build over distinct installs into one site-maintained
   reply, e.g. "Ran without problems for N Linux users so far (last report <date>)."
+
+## Profile fields (Masquerade)
+
+Separate from reports, the launcher keeps the user's public profile fields on the site equal
+to the machine it runs on. No launcher-specific endpoint is involved: it uses the site's own
+FoF Masquerade API as the user who is logged in inside the embedded view, so the site's
+permissions (`fof.masquerade.have-profile`) decide whether the write is allowed.
+
+- Fields are matched by **name**, case-insensitively, with a few aliases: `Distro`, `Kernel`,
+  `GPU`, `GPU driver`, `Proton / Wine`. Only `text` (and `url`) fields are written; fields the
+  site does not define are skipped, and other fields on the profile are left untouched.
+- Values: distro = `PRETTY_NAME`; kernel = `uname -r`; GPU = tidied lspci names joined with
+  ` + ` (e.g. `NVIDIA GeForce RTX 4060 Max-Q / Mobile + AMD Phoenix1`); GPU driver = `NVIDIA <version>`
+  and/or the Mesa version from `vulkaninfo`; Proton / Wine = the Proton build the launcher uses.
+- Requests: `GET /api` with the embedded view's cookies for the CSRF token and the field list
+  (`included[type=masquerade-fields]`), `GET /api/users/<name>?bySlug=1` for the user id, then
+  `POST /api/masquerade-answers/configure/<id>` with `{"<field id>": "<value>", …}` and
+  `X-CSRF-Token`. A field left out of the body is not changed by Masquerade.
+- When: at every launcher start while linked, after the inline sharing answer, and after
+  Settings are saved. A fingerprint of the five values is kept in the launcher config
+  (`PROFILE_SYNCED`); nothing is sent while it is unchanged. "Update the profile now" in
+  Settings forces a write.
+- Switch: `PROFILE_SYNC=1|0` in the launcher config, shown in Settings. When the key is absent
+  it follows the sharing answer, so a user who declined sharing is not published either.
+  Logging out clears both keys.

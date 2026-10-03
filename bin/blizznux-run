@@ -66,7 +66,10 @@ load_config() {
 
 save_config() {
 	mkdir -p "$CONFIG_DIR"
-	printf 'PREFIX=%s\nPROTON=%s\nOFFLOAD=%s\n' "$PREFIX" "$PROTON" "$OFFLOAD" > "$CONFIG"
+	# The desktop app keeps its own keys (account, report settings) in the same file: carry them over.
+	local keep=""
+	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD)=' "$CONFIG" || true)
+	{ printf 'PREFIX=%s\nPROTON=%s\nOFFLOAD=%s\n' "$PREFIX" "$PROTON" "$OFFLOAD"; [[ -n $keep ]] && printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
 find_proton() {

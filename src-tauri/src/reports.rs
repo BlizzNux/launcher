@@ -27,7 +27,7 @@ struct Pairing {
 
 static PAIRING: std::sync::Mutex<Option<Pairing>> = std::sync::Mutex::new(None);
 
-fn http() -> Result<reqwest::Client, String> {
+pub(crate) fn http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
@@ -71,7 +71,7 @@ pub async fn link_start(app: AppHandle) -> Result<LinkStart, String> {
 
 const PAIR_COOKIE: &str = "bz_pair";
 
-fn site_host() -> String {
+pub(crate) fn site_host() -> String {
     std::env::var("BLIZZNUX_LINK_PAGE")
         .ok()
         .and_then(|p| p.parse::<url::Url>().ok())
@@ -221,23 +221,23 @@ fn os_release(key: &str) -> String {
 
 #[derive(serde::Serialize, Clone)]
 pub struct Gpu {
-    vendor: String,
-    name: String,
-    driver: String,
+    pub(crate) vendor: String,
+    pub(crate) name: String,
+    pub(crate) driver: String,
 }
 
 #[derive(serde::Serialize, Clone)]
 pub struct SystemProfile {
-    distro: String,
-    kernel: String,
-    desktop: String,
-    session: String,
-    cpu: String,
-    ram_gb: u64,
-    gpus: Vec<Gpu>,
-    proton: String,
-    umu: String,
-    prefix_kind: String,
+    pub(crate) distro: String,
+    pub(crate) kernel: String,
+    pub(crate) desktop: String,
+    pub(crate) session: String,
+    pub(crate) cpu: String,
+    pub(crate) ram_gb: u64,
+    pub(crate) gpus: Vec<Gpu>,
+    pub(crate) proton: String,
+    pub(crate) umu: String,
+    pub(crate) prefix_kind: String,
 }
 
 fn gpus() -> Vec<Gpu> {
@@ -461,6 +461,7 @@ pub struct AccountStatus {
     username: String,
     sharing: bool,
     bug_auto: bool,
+    profile_sync: bool,
 }
 
 #[tauri::command]
@@ -471,6 +472,7 @@ pub fn account_status() -> AccountStatus {
         username: c.get("USERNAME").cloned().unwrap_or_default(),
         sharing: c.get("REPORTS_SHARE").map_or(false, |v| v == "1"),
         bug_auto: c.get("BUG_AUTO").map_or(false, |v| v == "1"),
+        profile_sync: crate::profile::enabled(&c),
     }
 }
 
@@ -497,6 +499,8 @@ pub fn unlink_account() -> Result<AccountStatus, String> {
     c.remove("USER_TOKEN");
     c.remove("USERNAME");
     c.insert("REPORTS_SHARE".into(), "0".into());
+    c.remove("PROFILE_SYNC");
+    c.remove("PROFILE_SYNCED");   // a different account next time must not look "unchanged"
     c.insert("BUG_AUTO".into(), "0".into());
     save_config(&c)?;
     Ok(account_status())

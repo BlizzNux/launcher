@@ -121,6 +121,26 @@ blizznux-run dpi 144   # 150 %
 | `S2` | StarCraft II |
 | `W3` | Warcraft III: Reforged |
 
+## Your BlizzNux account
+
+The launcher works without an account. With one, your launches, game sessions and anything
+that breaks can be recorded under your name on [blizznux.com](https://blizznux.com), so the
+compatibility list reflects real machines.
+
+- **Logging in.** Until the launcher is linked to an account, every start opens the site's login
+  page in the embedded view. Logging in there links this install; there is nothing to type and
+  no extra window. One question in the bar then asks whether to share compatibility reports.
+- **Reports.** With sharing on, a successful Battle.net launch and each game session are
+  recorded with your setup (distro, kernel, GPU and driver, Proton, umu, game and Battle.net
+  builds), at most once per day per build. Failures include the launcher log, with home paths
+  removed. Everything is shown before it is sent; what the site stores is described in
+  [REPORTING.md](REPORTING.md).
+- **Profile fields.** Your blizznux.com profile has fields for Distro, Kernel, GPU, GPU driver
+  and Proton / Wine. Once linked, the launcher keeps them equal to this machine, writing only
+  when something changed. Turn it off under Settings, or press "Update the profile now" there.
+- **Logging out** under Settings removes the token from this machine. The account itself is
+  untouched; the site lists your linked installs on your profile.
+
 ## World of Warcraft addons
 
 When World of Warcraft is installed in the prefix, an **Addons** button appears in the bar.

@@ -68,7 +68,24 @@ async function refreshAccount() {
   $("#acct-name").textContent = account.username;
   $("#cfg-share").checked = account.sharing;
   $("#cfg-bug-auto").checked = account.bug_auto;
+  $("#cfg-profile-sync").checked = account.profile_sync;
   return account;
+}
+
+// The site's profile fields (Distro, Kernel, GPU, GPU driver, Proton / Wine) follow this machine.
+// Quiet unless something was written; `where` is an element that shows the outcome either way.
+async function syncProfile(force = false, where = null) {
+  try {
+    const r = await invoke("profile_sync", { force });
+    if (r.status === "updated") {
+      status(`Profile on blizznux.com updated: ${r.fields.join(", ")}.`);
+      if (where) where.textContent = `Updated ${r.fields.join(", ")}.`;
+    } else if (where) {
+      where.textContent = r.status === "unchanged" ? "Already up to date." : r.status === "disabled" ? "Profile updates are off." : "Log in with BlizzNux.com first.";
+    }
+  } catch (e) {
+    if (where) where.textContent = `Not updated: ${e}`; else console.warn("profile sync:", e);
+  }
 }
 
 let pollTimer;
@@ -119,8 +136,9 @@ function askSharing(username) {
   $("#bar-notice").classList.remove("hidden");
   const done = async (yes) => {
     $("#bar-notice").classList.add("hidden");
-    try { await invoke("write_config", { values: { REPORTS_SHARE: yes ? "1" : "0" } }); await refreshAccount(); } catch (e) { status(String(e), true); }
-    status(yes ? "Sharing verification reports. Bug reports can be automated in Settings." : "Not sharing. You can change this in Settings.");
+    try { await invoke("write_config", { values: { REPORTS_SHARE: yes ? "1" : "0", PROFILE_SYNC: yes ? "1" : "0" } }); await refreshAccount(); } catch (e) { status(String(e), true); }
+    status(yes ? "Sharing verification reports; your profile now shows this machine's setup. Both can be changed in Settings." : "Not sharing. You can change this in Settings.");
+    if (yes) syncProfile(true);
   };
   $("#notice-yes").onclick = () => done(true);
   $("#notice-no").onclick = () => done(false);
@@ -375,8 +393,9 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0" } });
+    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0", PROFILE_SYNC: $("#cfg-profile-sync").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
+    syncProfile(false);
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
 }
@@ -436,6 +455,8 @@ async function init() {
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };
   $("#cfg-share").addEventListener("change", saveConfig);
+  $("#cfg-profile-sync").addEventListener("change", saveConfig);
+  $("#profile-sync-now").onclick = () => { $("#profile-sync-status").textContent = "Updating…"; syncProfile(true, $("#profile-sync-status")); };
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
     showLog(true);
@@ -462,6 +483,7 @@ async function init() {
   // One navigation only: two loads racing before the session cookie exists leave the page with a
   // CSRF token that does not match the stored session, and the first login attempt fails.
   if (st.installed && !acct.linked) startLogin(); else $("#site").src = FORUM;
+  if (acct.linked) syncProfile(false);   // profile fields follow this machine; silent when unchanged
   checkUpdate(version);
   checkBattlenet();
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
