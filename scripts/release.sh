@@ -10,8 +10,9 @@ notes=${2:-}
 key=${TAURI_SIGNING_PRIVATE_KEY:-$HOME/.config/blizznux-dev/signing.key}
 [[ -f $key ]] || { echo "signing key not found: $key" >&2; exit 1; }
 
-# 1. version in the three manifests
+# 1. version in the three manifests and in the wrapper script
 sed -i "s/^version = \".*\"/version = \"$ver\"/" src-tauri/Cargo.toml
+sed -i "s/^VERSION=.*/VERSION=$ver/" bin/blizznux-run
 python3 - "$ver" <<'PY'
 import json, pathlib, sys
 v = sys.argv[1]
@@ -44,7 +45,7 @@ print(json.dumps({
 PY
 
 # 4. commit the version bump, tag, publish
-git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json package.json
+git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json package.json bin/blizznux-run
 git -c commit.gpgsign=false commit -q -m "Release v$ver" || true
 git push -q origin HEAD
 args=(--title "v$ver")
