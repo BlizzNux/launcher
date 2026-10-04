@@ -112,7 +112,7 @@ fetch_proton() {
 	mkdir -p "$PROTON_DIR"
 	local part=$PROTON_DIR/$PROTON_NAME.tar.xz.part
 	if ! proton_sum_ok "$part"; then
-		log "downloading Proton $PROTON_VERSION (about $PROTON_MB MB, once)"
+		log "downloading Proton $PROTON_VERSION (about $PROTON_MB MB)"
 		local rc=0
 		download_proton "$part" || rc=$?
 		if (( rc == 22 || rc == 33 )); then

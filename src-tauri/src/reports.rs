@@ -330,7 +330,7 @@ fn proton_arriving(dir: &Path) -> Option<String> {
     }
     let part = fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().map_or(false, |x| x == "part") && fresh(p, 60))?;
     let mb = fs::metadata(&part).map(|m| m.len() / 1_048_576).unwrap_or(0);
-    Some(format!("Downloading Proton (once), {mb} MB so far. Battle.net starts when that is done."))
+    Some(format!("Downloading Proton, {mb} MB so far. Battle.net starts when that is done."))
 }
 
 fn proton_dir() -> PathBuf {
@@ -1408,7 +1408,7 @@ mod tests {
         // The files just written there are an unpacking and a download under way.
         assert!(proton_arriving(&dir).unwrap().starts_with("Unpacking Proton"));
         fs::remove_dir_all(dir.join(".unpack")).unwrap();
-        assert!(proton_arriving(&dir).unwrap().starts_with("Downloading Proton (once), 0 MB"));
+        assert!(proton_arriving(&dir).unwrap().starts_with("Downloading Proton, 0 MB"));
         fs::remove_file(dir.join("proton-cachyos-11.0-20260703-slr-x86_64.tar.xz.part")).unwrap();
         assert_eq!(proton_arriving(&dir), None);
         fs::remove_dir_all(&dir).unwrap();
