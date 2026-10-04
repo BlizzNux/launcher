@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# blizznux-run — install, import and launch Battle.net on Linux through Proton via umu-launcher.
+# blizznux-run — install and launch Battle.net on Linux through Proton via umu-launcher.
 # No Steam required. Part of the BlizzNux launcher: https://github.com/BlizzNux/launcher
 # Copyright (C) 2026 Karl Bullock. Licensed under the GPL-3.0-or-later; see LICENSE.
 set -euo pipefail
@@ -13,12 +13,14 @@ CONFIG=$CONFIG_DIR/config
 # Blizzard's own download endpoint. The installer is never redistributed by this project.
 INSTALLER_URL='https://www.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live'
 LAUNCHER_REL='drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe'
-# umu-launcher's own release, used when the system has none (Ubuntu, Debian and Fedora do not package it).
+# The umu-launcher release every install runs, kept in the launcher's data folder. A umu-launcher of the
+# system is not used: every distribution has another version, or none. Change the version and the checksum
+# together, here and in the Flatpak manifest, which carries the same release.
 UMU_VERSION=1.4.4
 UMU_URL=https://github.com/Open-Wine-Components/umu-launcher/releases/download/$UMU_VERSION/umu-launcher-$UMU_VERSION-zipapp.tar
 UMU_SHA256=eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851
 UMU_DIR=$DATA_DIR/umu
-# The Proton build every install runs on unless another one is chosen: Proton-CachyOS's own release for
+# The Proton build every install runs on: Proton-CachyOS's own release for
 # any distribution, kept in the launcher's data folder. It moves to a newer build only after Blizzard's
 # games ran on that one; change the version, the checksum and the size together.
 PROTON_VERSION=cachyos-11.0-20260703-slr
@@ -28,7 +30,7 @@ PROTON_SHA256=62ff4b2750180723cc00538608fe687e21d1d91a31ef64ce1a7c9f46c3db310b
 PROTON_MB=320
 PROTON_DIR=$DATA_DIR/proton
 
-PREFIX=""; PROTON=""; OFFLOAD=auto; GAME=""
+PREFIX=""; OFFLOAD=auto; GAME=""
 
 usage() {
 	cat <<USAGE
@@ -38,19 +40,14 @@ Usage:
   blizznux-run [launch] [--game CODE]   Launch Battle.net (installs it first if needed).
                                         --game starts a game right away, e.g. --game WoW
   blizznux-run install                  Download Blizzard's installer and run it.
-  blizznux-run import PATH              Use an existing Battle.net prefix (Steam compatdata/<id>/pfx,
-                                        Lutris, Bottles) instead of installing again.
   blizznux-run dpi N                    Set the Windows DPI inside the prefix (96 = 100%, 144 = 150%).
-  blizznux-run umu                      Make sure umu-launcher is available (downloads it when the
-                                        system has none) and show which one is used.
-  blizznux-run proton                   Make sure Proton is available (downloads the launcher's own
-                                        build when none was chosen) and show which one is used.
+  blizznux-run umu                      Make sure the launcher's umu-launcher is there (downloads it
+                                        on first use) and show it.
+  blizznux-run proton                   Make sure the launcher's Proton is there (downloads it on
+                                        first use) and show it.
   blizznux-run doctor                   Show what would be used and why.
 
 Options:
-  --prefix DIR      Prefix to use for this run (default: \$XDG_DATA_HOME/blizznux/prefix).
-  --proton DIR      Proton build to use (default: the launcher's own tested build, downloaded on
-                    first use).
   --offload on|off  NVIDIA PRIME render offload (default: auto, on when a hybrid NVIDIA setup is found).
 
 Game codes for --game: WoW, WTCG (Hearthstone), Hero (Heroes of the Storm), Pro (Overwatch),
@@ -82,16 +79,17 @@ load_config() {
 	[[ -f $CONFIG ]] || return 0
 	local k v
 	while IFS='=' read -r k v; do
-		case $k in PREFIX|PROTON|OFFLOAD) printf -v "$k" '%s' "$v" ;; esac
+		case $k in PREFIX|OFFLOAD) printf -v "$k" '%s' "$v" ;; esac
 	done < "$CONFIG"
 }
 
 save_config() {
 	mkdir -p "$CONFIG_DIR"
 	# The desktop app keeps its own keys (account, report settings) in the same file: carry them over.
+	# A Proton build chosen with an earlier version is dropped: the launcher's own is the only one now.
 	local keep=""
 	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD)=' "$CONFIG" || true)
-	{ printf 'PREFIX=%s\nPROTON=%s\nOFFLOAD=%s\n' "$PREFIX" "$PROTON" "$OFFLOAD"; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
+	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
 proton_sum_ok() { echo "$PROTON_SHA256  $1" | sha256sum -c --quiet - >/dev/null 2>&1; }
@@ -140,13 +138,9 @@ fetch_proton() {
 	rm -rf "$tmp" "$part"
 }
 
-# Proton to use: the build chosen in the config or with --proton, else the launcher's own (downloaded on
-# first use). The system's Proton is not used by itself: it changes with every system update.
+# Proton to use: the launcher's own build, downloaded on first use. A Proton of the system is not
+# used: it changes with every system update, and no two machines would run the same one.
 find_proton() {
-	if [[ -n $PROTON ]]; then
-		[[ -x $PROTON/proton ]] || die "no Proton build at $PROTON"
-		echo "$PROTON"; return
-	fi
 	[[ -x $PROTON_DIR/$PROTON_NAME/proton ]] || fetch_proton >&2   # callers read the path from stdout
 	echo "$PROTON_DIR/$PROTON_NAME"
 }
@@ -185,7 +179,7 @@ ensure_prefix() {
 
 fetch_umu() {
 	command -v python3 >/dev/null || die "python3 is needed to run umu-launcher"
-	log "umu-launcher is not installed; downloading version $UMU_VERSION from its GitHub release"
+	log "downloading umu-launcher $UMU_VERSION"
 	local tmp; tmp=$(mktemp -d)
 	curl -fL --retry 3 -sS -o "$tmp/umu.tar" "$UMU_URL" || die "could not download umu-launcher"
 	echo "$UMU_SHA256  $tmp/umu.tar" | sha256sum -c --quiet - || die "the umu-launcher download is damaged (checksum mismatch)"
@@ -193,14 +187,20 @@ fetch_umu() {
 	mkdir -p "$UMU_DIR"
 	install -m755 "$tmp/umu/umu-run" "$UMU_DIR/umu-run"
 	[[ ! -f $tmp/umu/umu_run.py ]] || install -m755 "$tmp/umu/umu_run.py" "$UMU_DIR/umu_run.py"
+	echo "$UMU_VERSION" > "$UMU_DIR/version"
 	rm -rf "$tmp"
 }
 
-# umu-run to use: the system's, else the launcher's own copy (downloaded on first use).
+# The launcher's own umu-run if it is there: the one inside the Flatpak, else the downloaded release
+# of the version above.
+own_umu() {
+	if [[ -n ${FLATPAK_ID:-} && -x /app/bin/umu-run ]]; then echo /app/bin/umu-run; return; fi
+	[[ -x $UMU_DIR/umu-run && $(cat "$UMU_DIR/version" 2>/dev/null) == "$UMU_VERSION" ]] && echo "$UMU_DIR/umu-run"
+}
+
+# umu-run to use: the launcher's own, downloaded on first use.
 find_umu() {
-	if command -v umu-run >/dev/null; then command -v umu-run; return; fi
-	[[ -x $UMU_DIR/umu-run ]] || fetch_umu
-	echo "$UMU_DIR/umu-run"
+	own_umu || { fetch_umu >&2; echo "$UMU_DIR/umu-run"; }   # callers read the path from stdout
 }
 
 run_umu() {
@@ -225,14 +225,6 @@ cmd_install() {
 	run_umu "$setup"
 	[[ -f $PREFIX/$LAUNCHER_REL ]] || die "the installer finished but Battle.net was not found; run 'blizznux-run install' again"
 	log "installed"
-}
-
-cmd_import() {
-	local src=${1:?usage: blizznux-run import PATH}
-	[[ -f $src/$LAUNCHER_REL ]] || die "no Battle.net installation under $src (expected $LAUNCHER_REL)"
-	PREFIX=$(realpath "$src")
-	save_config
-	log "using existing prefix: $PREFIX"
 }
 
 cmd_dpi() {
@@ -266,20 +258,17 @@ cmd_proton() {
 
 cmd_doctor() {
 	ensure_prefix
-	local umu; umu=$(command -v umu-run || true)
-	[[ -n $umu || ! -x $UMU_DIR/umu-run ]] || umu=$UMU_DIR/umu-run
+	local umu; umu=$(own_umu || true)
 	echo "blizznux-run $VERSION"
 	if [[ -n $umu ]]; then
 		echo "umu-run:   $umu $("$umu" --version 2>/dev/null | head -1)"
 	else
-		echo "umu-run:   not installed (downloaded on first use)"
+		echo "umu-run:   $UMU_VERSION (downloaded on first use)"
 	fi
-	if [[ -n $PROTON ]]; then
-		echo "proton:    $PROTON $([[ -x $PROTON/proton ]] && echo '(chosen in the settings)' || echo '(no Proton build there)')"
-	elif [[ -x $PROTON_DIR/$PROTON_NAME/proton ]]; then
-		echo "proton:    $PROTON_DIR/$PROTON_NAME (the launcher's own)"
+	if [[ -x $PROTON_DIR/$PROTON_NAME/proton ]]; then
+		echo "proton:    $PROTON_DIR/$PROTON_NAME"
 	else
-		echo "proton:    $PROTON_VERSION, the launcher's own (downloaded on first use)"
+		echo "proton:    $PROTON_VERSION (downloaded on first use)"
 	fi
 	echo "prefix:    $PREFIX $([[ -f $PREFIX/$LAUNCHER_REL ]] && echo '(Battle.net installed)' || echo '(Battle.net not installed)')"
 	echo "offload:   $OFFLOAD $(hybrid_nvidia && echo '(hybrid NVIDIA detected)' || echo '(no hybrid NVIDIA)')"
@@ -290,10 +279,9 @@ load_config
 cmd=launch
 while (( $# )); do
 	case $1 in
-	launch|install|import|dpi|umu|proton|doctor) cmd=$1 ;;
+	launch|install|dpi|umu|proton|doctor) cmd=$1 ;;
+	import|--prefix|--proton) die "'$1' is gone: the launcher installs Battle.net itself and runs it on its own Proton" ;;
 	--game) GAME=${2:?--game needs a code}; shift ;;
-	--prefix) PREFIX=${2:?--prefix needs a directory}; shift ;;
-	--proton) PROTON=${2:?--proton needs a directory}; shift ;;
 	--offload) OFFLOAD=${2:?--offload needs on|off|auto}; shift ;;
 	-h|--help) usage; exit 0 ;;
 	-V|--version) echo "$VERSION"; exit 0 ;;
@@ -304,7 +292,6 @@ done
 case $cmd in
 launch) keep_log; cmd_launch ;;
 install) keep_log; cmd_install ;;
-import) cmd_import "${1:-}" ;;
 dpi) keep_log; cmd_dpi "${1:-}" ;;
 umu) cmd_umu ;;
 proton) cmd_proton ;;

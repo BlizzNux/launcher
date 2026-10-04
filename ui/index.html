@@ -45,14 +45,6 @@
     <section id="panel-settings" class="panel-page">
       <h1>Settings</h1>
       <div class="form">
-        <label>Battle.net prefix
-          <input id="cfg-prefix" placeholder="~/.local/share/blizznux/prefix">
-          <small class="muted">Point this at an existing Steam, Lutris or Bottles prefix to reuse installed games.</small>
-        </label>
-        <label>Proton build
-          <input id="cfg-proton" placeholder="auto (the build the launcher is tested with)">
-          <small class="muted">Leave this empty to use the launcher's own Proton, downloaded on first use. A folder here is used instead.</small>
-        </label>
         <div class="field">
           <div class="field-name">NVIDIA render offload</div>
           <label class="radio"><input type="radio" name="offload" value="auto"> Auto (on for hybrid laptops)</label>
@@ -115,7 +107,7 @@
     <section id="panel-setup" class="panel-page">
       <h1>Set up Battle.net</h1>
       <ul id="checks" class="checks"></ul>
-      <p>Battle.net isn't installed in the launcher's prefix yet. Pick one:</p>
+      <p>Battle.net isn't installed yet.</p>
       <div class="choice">
         <div class="choice-text">
           <strong>Install Battle.net</strong>
@@ -123,15 +115,6 @@
             let it finish, then close Battle.net. Takes a few minutes.</span>
         </div>
         <button id="do-install" class="launch">Install Battle.net</button>
-      </div>
-      <div class="choice">
-        <div class="choice-text">
-          <strong>I already have Battle.net on this computer</strong>
-          <span class="muted">Point the launcher at an existing prefix from Steam, Lutris or Bottles.
-            Your games stay where they are; nothing is downloaded again.</span>
-          <input id="import-path" placeholder="e.g. ~/.local/share/Steam/steamapps/compatdata/123456/pfx">
-        </div>
-        <button id="do-import" class="flat">Use this prefix</button>
       </div>
       <p id="setup-status" class="muted"></p>
       <pre id="setup-log" class="diag hidden"></pre>

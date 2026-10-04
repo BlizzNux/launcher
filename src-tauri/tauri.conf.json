@@ -49,9 +49,6 @@
           "curl",
           "python3",
           "xz-utils"
-        ],
-        "recommends": [
-          "umu-launcher"
         ]
       },
       "rpm": {
@@ -59,9 +56,6 @@
           "curl",
           "python3",
           "xz"
-        ],
-        "recommends": [
-          "umu-launcher"
         ]
       }
     },

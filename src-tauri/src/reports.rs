@@ -342,11 +342,9 @@ pub(crate) fn own_proton() -> Option<PathBuf> {
     proton_under(&proton_dir())
 }
 
-/// The build chosen in the settings, else the launcher's own.
+/// The launcher's own build: the only one Battle.net is started with.
 fn proton_in_use() -> String {
-    let cfg = load_config();
-    let dir = cfg.get("PROTON").filter(|p| !p.is_empty()).map(PathBuf::from).or_else(own_proton);
-    match dir {
+    match own_proton() {
         Some(d) => {
             let ver = fs::read_to_string(d.join("version")).unwrap_or_default();
             let ver = ver.split_whitespace().last().unwrap_or("").to_string();

@@ -34,13 +34,14 @@ fn config_path() -> PathBuf {
     base.join("blizznux").join("config")
 }
 
-/// umu-run: the system's, else the copy the wrapper downloads into the launcher's data folder
-/// (Ubuntu, Debian and Fedora do not package umu-launcher).
+/// umu-run: the launcher's own copy, which the wrapper downloads into the data folder on first
+/// use; the Flatpak carries the same release inside. A umu-launcher of the system is not used.
 pub(crate) fn umu_run() -> Option<PathBuf> {
-    let system = std::env::var("PATH")
-        .ok()
-        .and_then(|p| p.split(':').map(|d| PathBuf::from(d).join("umu-run")).find(|f| f.is_file()));
-    system.or_else(|| Some(own_umu()).filter(|f| f.is_file()))
+    let bundled = PathBuf::from("/app/bin/umu-run");
+    if std::env::var_os("FLATPAK_ID").is_some() && bundled.is_file() {
+        return Some(bundled);
+    }
+    Some(own_umu()).filter(|f| f.is_file())
 }
 
 fn own_umu() -> PathBuf {
@@ -178,7 +179,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK") {
+                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -198,9 +199,8 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let mut text = format!(
-        "PREFIX={}\nPROTON={}\nOFFLOAD={}\n",
+        "PREFIX={}\nOFFLOAD={}\n",
         current.get("PREFIX").cloned().unwrap_or_default(),
-        current.get("PROTON").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
     for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK"] {
@@ -221,7 +221,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
 fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
     let mut current = load_config();
     for (k, v) in values {
-        if matches!(k.as_str(), "PREFIX" | "PROTON" | "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO") {
+        if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO") {
             current.insert(k, v.trim().to_string());
         }
     }
@@ -276,20 +276,6 @@ fn install(app: AppHandle) -> Result<(), String> {
         let _ = child.wait();
     });
     Ok(())
-}
-
-#[tauri::command]
-async fn import_prefix(app: AppHandle, path: String) -> Result<String, String> {
-    let mut p = path.trim().to_string();
-    if p.is_empty() {
-        return Err("enter the path to the prefix".into());
-    }
-    if let Some(rest) = p.strip_prefix("~/") {
-        p = home().join(rest).display().to_string();
-    }
-    tauri::async_runtime::spawn_blocking(move || run_script(&app, &["import", &p]))
-        .await
-        .map_err(|e| e.to_string())?
 }
 
 #[derive(serde::Serialize)]
@@ -388,16 +374,15 @@ fn readiness() -> Vec<Check> {
     let vendors = gpu_vendors();
     let mut out = Vec::new();
 
-    // Without a system umu-launcher the wrapper downloads umu's own release; that needs python3.
+    // The wrapper downloads the launcher's own umu-launcher on first use; running it needs python3.
     let umu = umu_run();
     let python = on_path("python3");
     out.push(Check {
         name: "umu-launcher".into(),
         ok: umu.is_some() || python,
         detail: match &umu {
-            Some(p) if *p == own_umu() => "found (the launcher's own copy)".into(),
-            Some(_) => "found".into(),
-            None if python => "not installed; the launcher downloads its own copy on first use".into(),
+            Some(_) => "found (the launcher's own copy)".into(),
+            None if python => "not downloaded yet; the launcher fetches its own copy on first use".into(),
             None => "needs python3, which was not found".into(),
         },
         hint: match family {
@@ -408,26 +393,21 @@ fn readiness() -> Vec<Check> {
         blocking: true,
     });
 
-    // A Proton build chosen in the settings has to exist. Without one the wrapper downloads the
-    // launcher's own build on first use; unpacking it needs xz.
-    let chosen = load_config().get("PROTON").filter(|p| !p.is_empty()).map(PathBuf::from);
+    // The wrapper downloads the launcher's own Proton on first use; unpacking it needs xz.
     let xz = on_path("xz");
-    let (ok, detail) = match (&chosen, reports::own_proton()) {
-        (Some(p), _) if p.join("proton").is_file() => (true, "found (the build chosen in Settings)".to_string()),
-        (Some(p), _) => (false, format!("no Proton build at {}", p.display())),
-        (None, Some(_)) => (true, "found (the launcher's own build)".to_string()),
-        (None, None) if xz => (true, "not downloaded yet; the launcher fetches its own build on first use".to_string()),
-        (None, None) => (false, "needs xz to unpack it, which was not found".to_string()),
+    let (ok, detail) = match reports::own_proton() {
+        Some(_) => (true, "found (the launcher's own build)"),
+        None if xz => (true, "not downloaded yet; the launcher fetches its own build on first use"),
+        None => (false, "needs xz to unpack it, which was not found"),
     };
     out.push(Check {
         name: "Proton".into(),
         ok,
-        detail,
-        hint: match (&chosen, family) {
-            (Some(_), _) => "clear the Proton build field in Settings to use the launcher's own build".into(),
-            (None, "arch") => "sudo pacman -S xz".into(),
-            (None, "fedora") => "sudo dnf install xz".into(),
-            (None, _) => "sudo apt install xz-utils".into(),
+        detail: detail.into(),
+        hint: match family {
+            "arch" => "sudo pacman -S xz".into(),
+            "fedora" => "sudo dnf install xz".into(),
+            _ => "sudo apt install xz-utils".into(),
         },
         blocking: true,
     });
@@ -537,8 +517,6 @@ fn fix_steps(check: &str) -> Option<Vec<String>> {
             steps.push("apt-get install -y python3".into());
         }
         // The launcher's own Proton is downloaded by the wrapper; only xz can be missing for it.
-        // A build chosen in Settings that is not there is for the user to correct.
-        ("Proton", _) if load_config().get("PROTON").map_or(false, |p| !p.is_empty()) => return None,
         ("Proton", "arch") => steps.push("pacman -S --needed --noconfirm xz".into()),
         ("Proton", "fedora") => steps.push("dnf -y install xz".into()),
         ("Proton", "debian") => {
@@ -787,7 +765,6 @@ pub fn run() {
             write_config,
             install_state,
             install,
-            import_prefix,
             readiness,
             fix_plan,
             fix_apply,

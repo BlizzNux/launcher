@@ -459,17 +459,15 @@ async function checkBattlenet() {
 
 async function loadConfig() {
   const c = await invoke("read_config");
-  $("#cfg-prefix").value = c.PREFIX || "";
   $("#cfg-reports-auto").checked = c.REPORTS_AUTO === "1";
   refreshAccount();
-  $("#cfg-proton").value = c.PROTON || "";
   const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
   off.checked = true;
 }
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { PREFIX: $("#cfg-prefix").value, PROTON: $("#cfg-proton").value, OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0" } });
+    await invoke("write_config", { values: { OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -542,15 +540,6 @@ async function init() {
       if (s.installed) { clearInterval(poll); showLog(false); $("#setup-status").textContent = "Battle.net is installed."; setTimeout(hidePanel, 1200); }
       else if (Date.now() - started > 20 * 60 * 1000) { clearInterval(poll); $("#setup-status").textContent = "Still not installed. The log above shows what happened."; }
     }, 4000);
-  };
-  $("#do-import").onclick = async () => {
-    $("#setup-status").textContent = "Checking…";
-    try {
-      const msg = await invoke("import_prefix", { path: $("#import-path").value });
-      $("#setup-status").textContent = msg.trim();
-      await loadConfig();
-      if ((await refreshState()).installed) setTimeout(hidePanel, 1000);
-    } catch (e) { $("#setup-status").textContent = String(e).trim(); }
   };
   loadConfig();
   try { showSession(await invoke("session_state")); } catch (e) { console.error(e); }

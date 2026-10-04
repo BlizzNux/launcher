@@ -15,12 +15,12 @@ without Steam being installed.
 
 ## Status
 
-**v0.1 — command-line launcher.** One script, `bin/blizznux-run`, that installs, imports and
+**v0.1 — command-line launcher.** One script, `bin/blizznux-run`, that installs and
 launches Battle.net. It is the engine for everything else and stays usable on its own.
 
 **v0.2 — desktop app (in development).** A Tauri 2 application in `src-tauri/` and `ui/`:
 BlizzNux.com fills the window, with a control bar underneath: Launch Battle.net, Settings
-(prefix, Proton, GPU offload, display scaling, diagnostics) and the Disclaimer. An update check against GitHub releases shows in the bar when a newer version
+(GPU offload, display scaling, diagnostics) and the Disclaimer. An update check against GitHub releases shows in the bar when a newer version
 exists. Launching goes through the same script.
 
 ### Building the desktop app
@@ -36,23 +36,30 @@ npm run build    # AppImage, deb and rpm under src-tauri/target/release/bundle/
 Released bundles are built with `scripts/container-build.sh`, inside an Ubuntu 22.04 container
 (needs Docker), so that they also run on distributions older than the build machine.
 
-Tested on CachyOS with Proton-CachyOS and a hybrid AMD + NVIDIA laptop. Other distributions
+Tested on CachyOS with a hybrid AMD + NVIDIA laptop. Other distributions
 are best effort; please report what you find. Guides and the compatibility list live on the
 [BlizzNux wiki](https://blizznux.com/wiki).
 
+## Supported setup
+
+One setup is supported: Battle.net installed by the launcher into the launcher's own prefix,
+running on the launcher's own Proton and umu-launcher. The launcher downloads both on first
+use, and they are the same versions on every machine: the ones Blizzard's games are tested
+with here. They move to newer versions with a launcher release.
+
+There is no setting for another Proton build or another umu-launcher, and prefixes from Steam,
+Lutris or Bottles are not imported. A prefix that an earlier version of the launcher was
+pointed at keeps working, but it is not a supported setup.
+
 ## Requirements
 
-- `umu-launcher`. If your distribution has it (CachyOS and Arch: `pacman -S umu-launcher`) that
-  one is used. Otherwise the launcher downloads umu's own
-  [release](https://github.com/Open-Wine-Components/umu-launcher/releases) into its data folder
-  on first use; no root needed.
 - `curl`, `bash`, `python3`, `xz`.
-- Proton. The launcher downloads its own build on first use (Proton-CachyOS's
-  [release](https://github.com/CachyOS/proton-cachyos/releases) for any distribution, about
-  320 MB) into its data folder, and every install runs on that same build. It moves to a newer
-  one with a launcher release, after Blizzard's games ran on it. To use another build, enter
-  its folder in Settings or pass `--proton DIR`.
 - Vulkan drivers for your GPU (Mesa for AMD/Intel, the proprietary driver for NVIDIA).
+
+The launcher fetches the rest on first use, into its data folder and without root:
+umu-launcher's own [release](https://github.com/Open-Wine-Components/umu-launcher/releases)
+and Proton-CachyOS's [release](https://github.com/CachyOS/proton-cachyos/releases) for any
+distribution (about 320 MB).
 
 ## Install
 
@@ -86,17 +93,6 @@ and errors show as a desktop notification.
 blizznux-run                 # first run downloads Battle.net from Blizzard and installs it
 blizznux-run --game WoW      # start Battle.net and launch a game directly
 blizznux-run doctor          # show which umu, Proton, prefix and GPU settings apply
-```
-
-### Already have Battle.net under Steam, Lutris or Bottles?
-
-Point the launcher at that prefix instead of downloading hundreds of gigabytes again:
-
-```sh
-# Steam non-Steam shortcut (find the id under steamapps/compatdata)
-blizznux-run import ~/.local/share/Steam/steamapps/compatdata/<appid>/pfx
-# Lutris
-blizznux-run import ~/Games/battlenet
 ```
 
 ### Hybrid laptops (NVIDIA + integrated GPU)
