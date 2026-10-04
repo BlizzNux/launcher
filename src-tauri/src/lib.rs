@@ -178,7 +178,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK") {
+                if matches!(k, "PREFIX" | "PROTON" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -203,7 +203,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("PROTON").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
-    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK"] {
+    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK"] {
         if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
@@ -776,7 +776,8 @@ pub fn run() {
             reports::link_start,
             reports::link_poll,
             reports::link_cancel,
-            reports::unlink_account,
+            reports::link_check,
+            reports::link_revoke,
             updates::update_check,
             updates::update_install,
             updates::battlenet_update_check,

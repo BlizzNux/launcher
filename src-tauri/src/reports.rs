@@ -112,10 +112,12 @@ pub struct LinkPoll {
     username: String,
     /// Seconds to wait before asking again when `status` is "busy".
     retry_after: u64,
+    /// The same account as before on this launcher, with its sharing choices still in place.
+    returning: bool,
 }
 
 fn poll_answer(status: &str, retry_after: u64) -> LinkPoll {
-    LinkPoll { status: status.into(), username: String::new(), retry_after }
+    LinkPoll { status: status.into(), username: String::new(), retry_after, returning: false }
 }
 
 /// How long to wait when the site cannot answer a poll right now, or None when the answer is not
@@ -162,12 +164,14 @@ pub async fn link_poll(app: AppHandle) -> Result<LinkPoll, String> {
                 return Err("the site returned an invalid token".into());
             }
             let mut c = load_config();
+            // The link was ended from the site's side and the same person is back: nothing to ask again.
+            let returning = c.remove("LAST_USERNAME").map_or(false, |last| last == username) && c.contains_key("REPORTS_SHARE");
             c.insert("USER_TOKEN".into(), token);
             c.insert("USERNAME".into(), username.clone());
             save_config(&c)?;
             *PAIRING.lock().map_err(|e| e.to_string())? = None;
             let _ = set_pair_cookie(&app, None);
-            Ok(LinkPoll { status: "linked".into(), username, retry_after: 0 })
+            Ok(LinkPoll { status: "linked".into(), username, retry_after: 0, returning })
         }
         410 => {
             *PAIRING.lock().map_err(|e| e.to_string())? = None;
@@ -615,15 +619,133 @@ pub fn auto_bug_report(app: &AppHandle, comment: String) {
     });
 }
 
-#[tauri::command]
-pub fn unlink_account() -> Result<AccountStatus, String> {
+/// Forget the link on this machine and switch the sharing choices off.
+fn unlink_account() -> Result<AccountStatus, String> {
     let mut c = load_config();
     c.remove("USER_TOKEN");
     c.remove("USERNAME");
+    c.remove("LAST_USERNAME");
     c.insert("REPORTS_SHARE".into(), "0".into());
     c.insert("BUG_AUTO".into(), "0".into());
     save_config(&c)?;
     Ok(account_status())
+}
+
+/// What the site's answer to a link check means. Only a clear "no" ends the link; a site that is
+/// down, busy or does not know the question yet leaves it alone.
+fn check_outcome(code: u16) -> &'static str {
+    match code {
+        200 => "linked",
+        401 => "revoked",
+        _ => "unknown",
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct LinkCheck {
+    status: String,
+    username: String,
+}
+
+/// Ask the site whether the stored link still stands, so the launcher never shows a login it no
+/// longer has. When the site has ended it (revoked on the profile, or logged out in the embedded
+/// view), the token is forgotten here too. The sharing choices stay, so logging in again brings
+/// everything back without a question.
+#[tauri::command]
+pub async fn link_check() -> Result<LinkCheck, String> {
+    let c = load_config();
+    let token = c.get("USER_TOKEN").cloned().unwrap_or_default();
+    let username = c.get("USERNAME").cloned().unwrap_or_default();
+    if token.is_empty() {
+        return Ok(LinkCheck { status: "unlinked".into(), username: String::new() });
+    }
+    let sent = http()?
+        .post(format!("{}/check", link_url()))
+        .json(&serde_json::json!({ "install_id": install_id(), "user_token": token }))
+        .send()
+        .await;
+    let Ok(resp) = sent else { return Ok(LinkCheck { status: "unknown".into(), username }) };
+    let status = check_outcome(resp.status().as_u16());
+    if status == "revoked" {
+        let mut c = load_config();
+        if let Some(u) = c.remove("USERNAME") {
+            c.insert("LAST_USERNAME".into(), u);
+        }
+        c.remove("USER_TOKEN");
+        save_config(&c)?;
+        return Ok(LinkCheck { status: status.into(), username: String::new() });
+    }
+    Ok(LinkCheck { status: status.into(), username })
+}
+
+/// "Log out": one button for both logins. The site is told to end this launcher's link, the site
+/// login in the embedded view is removed from the launcher's own cookie store, and the link is
+/// forgotten here. The local parts happen even when the site cannot be reached.
+#[tauri::command]
+pub async fn link_revoke(app: AppHandle) -> Result<AccountStatus, String> {
+    let token = load_config().get("USER_TOKEN").cloned().unwrap_or_default();
+    if !token.is_empty() {
+        if let Ok(client) = http() {
+            let _ = client
+                .post(format!("{}/revoke", link_url()))
+                .json(&serde_json::json!({ "install_id": install_id(), "user_token": token }))
+                .send()
+                .await;
+        }
+    }
+    let _ = clear_site_login(&app);
+    unlink_account()
+}
+
+/// The site as the embedded view addresses it, for looking up its cookies.
+fn site_origin() -> String {
+    std::env::var("BLIZZNUX_LINK_PAGE")
+        .ok()
+        .and_then(|p| p.parse::<url::Url>().ok())
+        .map(|u| format!("{}/", u.origin().ascii_serialization()))
+        .unwrap_or_else(|| "https://blizznux.com/".into())
+}
+
+/// Log the embedded view out of the site by removing the site's cookies from the launcher's own
+/// cookie store. Waits until they are gone, so the page that loads next is really logged out: a
+/// link made before the site tied links to its login would otherwise log straight back in.
+fn clear_site_login(app: &AppHandle) -> Result<(), String> {
+    let main = app.get_webview_window("main").ok_or("main window missing")?;
+    let origin = site_origin();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    main.with_webview(move |platform| {
+        #[cfg(target_os = "linux")]
+        {
+            use std::cell::Cell;
+            use std::rc::Rc;
+            use webkit2gtk::{CookieManagerExt, WebContextExt, WebViewExt};
+            let none = None::<&webkit2gtk::gio::Cancellable>;
+            let Some(cm) = platform.inner().context().and_then(|ctx| ctx.cookie_manager()) else {
+                let _ = tx.send(());
+                return;
+            };
+            let deleter = cm.clone();
+            cm.cookies(&origin, none, move |found| {
+                let cookies = found.unwrap_or_default();
+                let left = Rc::new(Cell::new(cookies.len()));
+                if cookies.is_empty() {
+                    let _ = tx.send(());
+                }
+                for mut cookie in cookies {
+                    let (left, tx) = (left.clone(), tx.clone());
+                    deleter.delete_cookie(&mut cookie, none, move |_| {
+                        left.set(left.get() - 1);
+                        if left.get() == 0 {
+                            let _ = tx.send(());
+                        }
+                    });
+                }
+            });
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    let _ = rx.recv_timeout(Duration::from_secs(3));
+    Ok(())
 }
 
 /// True when the user linked an account and opted into community reports.
@@ -1220,6 +1342,15 @@ mod tests {
         assert!(names_program(r"C:\Program Files (x86)\Battle.net\Battle.net.exe", &BATTLENET));
         assert!(!names_program(r"C:\Program Files (x86)\Battle.net\Battle.net-Setup.exe", &BATTLENET));
         assert!(!names_program("/usr/bin/sleep", overwatch));
+    }
+
+    #[test]
+    fn only_a_clear_no_ends_the_link() {
+        assert_eq!(check_outcome(200), "linked");
+        assert_eq!(check_outcome(401), "revoked");
+        for other in [404, 429, 500, 503] {
+            assert_eq!(check_outcome(other), "unknown");
+        }
     }
 
     #[test]

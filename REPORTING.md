@@ -126,10 +126,31 @@ the launcher plants in its own cookie store.
    for both). CSRF-exempt; allow 60 per minute per pairing (a launcher sends at most 30),
    with only a loose cap per IP, since several launchers can share one address. On success the launcher deletes the
    cookie and returns the embedded view to the forum, which is now logged in.
-6. The site stores the token with the user id, `install_id` and creation date, revocable from
-   the user's profile. The launcher sends it as `user_token` on every report; an unknown or
-   revoked token is treated as anonymous (the report is still accepted). "Log out of the
-   launcher" only deletes the token locally.
+6. The site stores the token with the user id, `install_id` and creation date, bound to the
+   web session that approved the pairing. The launcher sends it as `user_token` on every
+   report; an unknown or revoked token, or one whose web session has ended, is treated as
+   anonymous (the report is still accepted).
+
+### One login
+
+Inside the launcher there is one login, not two that can disagree: logged in on the embedded
+site means linked, logged out means not linked.
+
+- **Check.** `POST /api/launcher/link/check` with `{"install_id": "<uuid>", "user_token":
+  "<token>"}`, CSRF-exempt. `200 {"username": "…"}` while the token is valid and its web
+  session is alive; `401` when it is unknown, revoked, belongs to another install, or its web
+  session is gone (logged out in the embedded view, expired, or revoked on the profile);
+  `429` with `Retry-After` when rate-limited (30 per minute per token). The launcher asks once
+  at start and after each page load that the embedded view does by itself, at most every ten
+  seconds. Only `401` ends the link: the launcher forgets the token, keeps the sharing choices
+  and starts a pairing, so a login in the embedded view links it again without a question.
+  Every other answer leaves the link alone.
+- **Revoke on the profile** ends the token and its web session, so the embedded view is
+  logged out as well. The list of linked installs shows the latest token per install.
+- **Log out in the launcher.** `POST /api/launcher/link/revoke` with the same body, `204`
+  always (idempotent; 10 per minute per IP): the token is revoked and its web session ended.
+  The launcher also removes the site's login cookies from its own cookie store, forgets the
+  token, switches the sharing choices off and shows the login page again.
 
 After linking, the launcher shows the sharing choices once (both off by default): share
 verification reports (launches and game sessions) and send bug reports automatically.

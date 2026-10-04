@@ -118,7 +118,7 @@ async function pollLogin() {
       pairing = false;
       await refreshAccount();
       showSite(FORUM);
-      askSharing(r.username);
+      if (r.returning) status(`Logged in as ${r.username}.`); else askSharing(r.username);
     } else if (r.status === "expired" || r.status === "none") {
       pairing = false;   // no new pairing by itself: a login or the Log in button starts the next one
     } else if (r.status === "busy") {
@@ -141,10 +141,41 @@ async function pollLogin() {
 // gone through, so ask right away. After the pairing has expired it is the only sign of a late
 // login: pair again, a few times per run at most.
 function onSiteLoaded() {
-  if (account.linked) return;
-  if (ownNavigation) { ownNavigation = false; return; }
+  const own = ownNavigation;
+  ownNavigation = false;
+  if (account.linked) { if (!own) checkLink(); return; }   // logging out on the site reloads the page
+  if (own) return;
   if (pairing) pollLogin();
   else if (repairs < REPAIRS_PER_RUN) { repairs++; startLogin(); }
+}
+
+// There is one login, not two that can disagree. The launcher asks the site whether its link
+// still stands at start and whenever the embedded view loads a page by itself. A link the site
+// has ended (revoked on the profile, logged out in the view) is dropped here as well, and the
+// login page comes back; logging in there links the launcher again without further questions.
+let lastLinkCheck = 0;
+
+async function checkLink() {
+  if (!account.linked || Date.now() - lastLinkCheck < 10000) return;
+  lastLinkCheck = Date.now();
+  try {
+    const r = await invoke("link_check");
+    if (r.status !== "revoked") return;
+    await refreshAccount();
+    status("You are logged out of BlizzNux.com.");
+    startLogin();
+  } catch (e) { console.error(e); }
+}
+
+// One button for both: the launcher's link and the site login in the embedded view.
+async function logOut() {
+  try {
+    await invoke("link_revoke");
+    await refreshAccount();
+    hidePanel();
+    status("Logged out.");
+    startLogin();
+  } catch (e) { status(String(e), true); }
 }
 
 // One inline question in the bar after linking; no dialog. Settings holds the switches after that.
@@ -490,7 +521,7 @@ async function init() {
   $("#acct-link").onclick = () => { hidePanel(); startLogin(); };
   $("#site").addEventListener("load", onSiteLoaded);
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
-  $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };
+  $("#acct-unlink").onclick = logOut;
   $("#cfg-share").addEventListener("change", saveConfig);
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
@@ -518,7 +549,7 @@ async function init() {
   const acct = await refreshAccount();
   // One navigation only: two loads racing before the session cookie exists leave the page with a
   // CSRF token that does not match the stored session, and the first login attempt fails.
-  if (st.installed && !acct.linked) startLogin(); else showSite(FORUM);
+  if (st.installed && !acct.linked) startLogin(); else { showSite(FORUM); checkLink(); }
   checkUpdate(version);
   checkBattlenet();
   invoke("flush_reports").then((n) => { if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`); }).catch(() => {});
