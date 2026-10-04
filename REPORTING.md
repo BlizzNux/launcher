@@ -41,8 +41,9 @@ local stub); the default is the URL above.
     "cpu": "AMD Ryzen 7 7840HS",
     "ram_gb": 14,
     "gpus": [ { "vendor": "nvidia", "name": "…", "driver": "615.71.09" }, { "vendor": "amd", "name": "…", "driver": "mesa 26.2.4" } ],
-    "proton": "proton-cachyos-11.0-20260924",
-    "umu": "1.4.3",
+    "proton": "cachyos-11.0-20260703-slr",
+    "umu": "1.4.4",
+    "runtime": "steamrt4 4.0.20260928.262390",
     "prefix_kind": "steam" | "lutris" | "blizznux" | "other"
   },
   "battlenet": { "build": "17896", "version": "2.53.4.17896" },
@@ -53,6 +54,12 @@ local stub); the default is the URL above.
   "log": "last ~200 lines of the launcher log (repeats folded as \"(×N) …\"), bug reports only, paths scrubbed"
 }
 ```
+
+`proton` and `umu` are the launcher's own, the same on every install of a launcher version.
+`runtime` is the Steam Linux Runtime umu runs Proton in; umu fetches the newest one by itself, so
+it can differ between machines (empty until the first start has set one up). `prefix_kind` is
+`blizznux` for a prefix the launcher made; the other values are prefixes an earlier version was
+pointed at.
 
 `game` is absent for a bug report that is not tied to a game and for launch reports.
 World of Warcraft keeps all its versions in one install folder, so the launcher reports the one

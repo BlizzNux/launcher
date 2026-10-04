@@ -221,7 +221,7 @@ cmd_install() {
 	local setup=$CACHE_DIR/Battle.net-Setup.exe
 	log "downloading the Battle.net installer from Blizzard"
 	curl -fL --retry 3 --progress-bar -o "$setup" "$INSTALLER_URL"
-	log "running the installer: sign in, let it finish, then close Battle.net"
+	log "running the installer: sign in when it asks; Battle.net opens when it is done"
 	run_umu "$setup"
 	[[ -f $PREFIX/$LAUNCHER_REL ]] || die "the installer finished but Battle.net was not found; run 'blizznux-run install' again"
 	log "installed"

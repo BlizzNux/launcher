@@ -269,6 +269,7 @@ pub struct SystemProfile {
     gpus: Vec<Gpu>,
     proton: String,
     umu: String,
+    runtime: String,
     prefix_kind: String,
 }
 
@@ -342,6 +343,34 @@ pub(crate) fn own_proton() -> Option<PathBuf> {
     proton_under(&proton_dir())
 }
 
+/// The Steam Linux Runtime in a folder of runtimes, as its own VERSIONS.txt names it:
+/// "steamrt4 4.0.20260928.262390". With several there, the one that was set up or updated last.
+fn runtime_under(dir: &Path) -> String {
+    let newest = fs::read_dir(dir).ok().and_then(|rd| {
+        rd.flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("steamrt")) && p.join("VERSIONS.txt").is_file())
+            .max_by_key(|p| fs::metadata(p.join("VERSIONS.txt")).and_then(|m| m.modified()).ok())
+    });
+    let Some(rt) = newest else { return String::new() };
+    let text = fs::read_to_string(rt.join("VERSIONS.txt")).unwrap_or_default();
+    let version = text
+        .lines()
+        .find_map(|l| {
+            let mut words = l.split_whitespace();
+            (words.next() == Some("depot")).then(|| words.next().unwrap_or("").to_string())
+        })
+        .unwrap_or_default();
+    format!("{} {version}", rt.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).trim().to_string()
+}
+
+/// The runtime umu runs Proton in. umu fetches the newest one by itself, so unlike Proton and
+/// umu it is not the same on every machine; the reports say which one a machine has.
+fn runtime_in_use() -> String {
+    let base = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".local/share"));
+    runtime_under(&base.join("umu"))
+}
+
 /// The launcher's own build: the only one Battle.net is started with.
 fn proton_in_use() -> String {
     match own_proton() {
@@ -395,6 +424,7 @@ pub fn system_profile() -> SystemProfile {
         gpus: gpus(),
         proton: proton_in_use(),
         umu,
+        runtime: runtime_in_use(),
         prefix_kind: prefix_kind.into(),
     }
 }
@@ -1473,6 +1503,22 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runtime_is_named_as_its_own_folder_records_it() {
+        let dir = std::env::temp_dir().join(format!("blizznux-runtime-test-{}", std::process::id()));
+        assert_eq!(runtime_under(&dir), "");
+        fs::create_dir_all(dir.join("steamrt4")).unwrap();
+        fs::create_dir_all(dir.join("umu-shim")).unwrap();
+        assert_eq!(runtime_under(&dir), "");
+        fs::write(
+            dir.join("steamrt4/VERSIONS.txt"),
+            "#Name\tVersion\t\tRuntime\tRuntime_Version\tComment\ndepot\t4.0.20260928.262390\t\t\t# Overall version number\npressure-vessel\t0.20260925.0\t\t\t\n",
+        )
+        .unwrap();
+        assert_eq!(runtime_under(&dir), "steamrt4 4.0.20260928.262390");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A stand-in for a program listening on a local port: answers every request with this
     /// status line until it is dropped.
