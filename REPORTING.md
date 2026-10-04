@@ -60,7 +60,9 @@ that actually ran: `flavor` is the folder the game ran from (`_retail_`, `_class
 `_classic_era_`, `_anniversary_`, …), `version` is that version's own build, and `name` is
 "World of Warcraft" for Retail and otherwise follows the folder ("WoW Classic", "WoW Classic
 Era", "WoW Anniversary"); `code` stays `WoW`. When the build of the version that ran cannot be
-read, no run report is sent. `flavor` is empty for other games.
+read, no run report is sent. When the launcher does not know which version ran (an answer saved
+by a launcher older than 0.2.19), it reports only if a single version is installed and never
+guesses among several. `flavor` is empty for other games.
 
 The launcher sends every version except test and beta clients (a folder with `ptr` or `beta` in
 its name sends nothing and asks nothing). Which versions get a thread is the site's decision: a

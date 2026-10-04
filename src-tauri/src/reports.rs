@@ -585,6 +585,33 @@ fn wow_product(code: &str, flavor: &str) -> Option<String> {
     })
 }
 
+/// The folder a World of Warcraft product is installed in: the reverse of `wow_product`.
+fn wow_folder(product: &str) -> String {
+    match product {
+        "wow" => "_retail_".into(),
+        "wowt" => "_ptr_".into(),
+        "wowxptr" => "_xptr_".into(),
+        other => other.strip_prefix("wow_").map(|inner| format!("_{inner}_")).unwrap_or_default(),
+    }
+}
+
+/// Which World of Warcraft version a report is about: (folder, product). `asked` is the folder
+/// the game ran from and `recorded` what that folder's `.flavor.info` says. When the folder is
+/// not known (an answer saved by an older launcher, a command line), only an install with a
+/// single version leaves no doubt; with several, nothing is chosen and no build is reported.
+fn resolve_wow(rows: &[BTreeMap<String, String>], asked: &str, recorded: Option<String>) -> (String, String) {
+    if !asked.is_empty() {
+        return (asked.to_string(), recorded.or_else(|| wow_product("WoW", asked)).unwrap_or_default());
+    }
+    match rows {
+        [only] => {
+            let product = only.get("Product").cloned().unwrap_or_default();
+            (wow_folder(&product), product)
+        }
+        _ => (String::new(), String::new()),
+    }
+}
+
 /// The product a World of Warcraft folder belongs to, as Blizzard records it in the folder's own
 /// `.flavor.info` (a header line, then the product name).
 fn flavor_product(root: &Path, flavor: &str) -> Option<String> {
@@ -618,7 +645,10 @@ fn game_name(g: &(&'static str, &'static str, &'static str, &'static [&'static s
     let words: Vec<String> = flavor
         .split('_')
         .filter(|w| !w.is_empty())
-        .map(|w| w[..1].to_uppercase() + &w[1..])
+        .map(|w| {
+            let mut rest = w.chars();
+            rest.next().map(|first| first.to_uppercase().chain(rest).collect()).unwrap_or_default()
+        })
         .collect();
     format!("WoW {}", words.join(" "))
 }
@@ -628,30 +658,20 @@ pub fn game_info(id: &str) -> Option<GameInfo> {
     let g = game_by_code(code)?;
     let root = game_root(&current_prefix(), g);
     let rows = build_info(&root.join(".build.info")).unwrap_or_default();
-    // Which of World of Warcraft's products ran: the folder says so itself, else by its name.
-    let product = wow_product(g.0, ran_from).map(|by_name| flavor_product(&root, ran_from).unwrap_or(by_name));
-    let row = build_row(&rows, product.as_deref());
+    // World of Warcraft has several versions in one folder; every other game has one product.
+    let wow = (g.0 == "WoW").then(|| resolve_wow(&rows, ran_from, flavor_product(&root, ran_from)));
+    let row = build_row(&rows, wow.as_ref().map(|(_, product)| product.as_str()));
     let version = row.and_then(|r| r.get("Version")).filter(|v| !v.is_empty()).cloned();
     // Hearthstone has no `.build.info`; its version only lives in `.product.db`. That file is the
     // folder's main product, so it cannot stand in for a World of Warcraft version.
     let version = match version {
         Some(v) => v,
-        None if product.is_some() => String::new(),
+        None if wow.is_some() => String::new(),
         None => fs::read(root.join(".product.db")).ok().and_then(|b| product_db_version(&b)).unwrap_or_default(),
     };
     // Only World of Warcraft has flavours as far as reports go; the field stays empty for the rest.
-    let flavor = if product.is_some() {
-        ran_from
-    } else {
-        match row.and_then(|r| r.get("Product")).map(String::as_str).unwrap_or_default() {
-            "wow" => "_retail_",
-            "wow_classic" => "_classic_",
-            "wow_classic_era" => "_classic_era_",
-            "wowt" => "_ptr_",
-            _ => "",
-        }
-    };
-    Some(GameInfo { code: g.0.into(), name: game_name(g, flavor), flavor: flavor.into(), version })
+    let flavor = wow.map(|(folder, _)| folder).unwrap_or_default();
+    Some(GameInfo { code: g.0.into(), name: game_name(g, &flavor), flavor, version })
 }
 
 fn install_id() -> String {
@@ -935,10 +955,9 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
         if !matches!(o.as_str(), "perfect" | "issues" | "broken" | "ok") {
             return Err(invalid("outcome must be perfect, issues, broken or ok"));
         }
-        if let Some((code, flavor)) = game.as_deref().map(split_game) {
-            if !is_reported(code, flavor) {
-                return Err(invalid("sessions on test and beta realms are not reported"));
-            }
+        let (code, flavor) = (body["game"]["code"].as_str().unwrap_or_default(), body["game"]["flavor"].as_str().unwrap_or_default());
+        if !is_reported(code, flavor) {
+            return Err(invalid("sessions on test and beta realms are not reported"));
         }
         if body["game"]["version"].as_str().map_or(true, str::is_empty) {
             let name = game.as_deref().map(split_game).and_then(|(code, flavor)| game_by_code(code).map(|g| game_name(g, flavor))).unwrap_or_else(|| "the game".to_string());
@@ -1386,7 +1405,6 @@ mod tests {
         assert_eq!(version("_retail_").as_deref(), Some("12.1.0.69933"));
         assert_eq!(version("_classic_era_").as_deref(), Some("1.15.9.70003"));
         assert_eq!(version("_classic_"), None);   // not installed: no build, not Retail's
-        assert_eq!(version("").as_deref(), Some("12.1.0.69933"));   // flavour unknown: as before
         assert_eq!(wow_product("WoW", "_ptr_").as_deref(), Some("wowt"));
         assert_eq!(wow_product("WoW", "_classic_era_ptr_").as_deref(), Some("wow_classic_era_ptr"));
         assert_eq!(wow_product("Pro", "_retail_"), None);
@@ -1402,6 +1420,32 @@ mod tests {
         }
         assert!(is_reported("Pro", "_retail_"));
         assert!(is_reported("WTCG", ""));
+    }
+
+    #[test]
+    fn an_unknown_wow_version_is_never_guessed() {
+        let rows = wow_rows();
+        // Known folder: that folder, with the product its own record names, else by its name.
+        assert_eq!(resolve_wow(&rows, "_classic_era_", Some("wow_classic_era".into())), ("_classic_era_".into(), "wow_classic_era".into()));
+        assert_eq!(resolve_wow(&rows, "_anniversary_", None), ("_anniversary_".into(), "wow_anniversary".into()));
+        // Unknown folder, several versions installed: nothing is chosen, so no build is found.
+        let (folder, product) = resolve_wow(&rows, "", None);
+        assert_eq!((folder.as_str(), product.as_str()), ("", ""));
+        assert!(build_row(&rows, Some(&product)).is_none());
+        // Unknown folder, a single version installed: it can only have been that one.
+        let only = &rows[1..];
+        assert_eq!(resolve_wow(only, "", None), ("_classic_era_".into(), "wow_classic_era".into()));
+        assert_eq!(wow_folder("wow"), "_retail_");
+        assert_eq!(wow_folder("wowt"), "_ptr_");
+        assert_eq!(wow_folder("wow_anniversary"), "_anniversary_");
+        assert_eq!(wow_folder("hsb"), "");
+    }
+
+    #[test]
+    fn a_name_is_made_from_any_folder_without_failing() {
+        let wow = game_by_code("WoW").unwrap();
+        assert_eq!(game_name(wow, "_\u{e9}t\u{e9}_"), "WoW \u{c9}t\u{e9}");
+        assert_eq!(game_name(wow, "___"), "WoW ");
     }
 
     #[test]
