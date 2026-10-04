@@ -91,17 +91,22 @@ function showSite(url) { ownNavigation = true; $("#site").src = url; }
 // Not logged in: the embedded view shows the site's front page, where the site opens its login
 // box once and lets the visitor close it. The launcher pairs itself in the background and
 // collects the token once a login lands; an account stays optional.
-async function startLogin() {
+async function startLogin({ navigate = true, delay = 0 } = {}) {
   stopPolling();
   try {
     const s = await invoke("link_start");
     pairing = true; pollStarted = Date.now(); pollFailures = 0;
-    showSite(s.url);
+    if (navigate) {
+      // A page that has only just loaded gets a moment to finish its own requests first: loading
+      // the next one on top of it cuts them short, and the site then flashes an error.
+      if (delay) await new Promise((done) => setTimeout(done, delay));
+      showSite(s.url);
+    }
     schedulePoll(POLL_FAST_MS);
   } catch (e) {
     pairing = false;
     console.error("pairing not started:", e);   // site unreachable: plain forum, try again next launch
-    showSite(FORUM);
+    if (navigate) showSite(FORUM);
   }
 }
 
@@ -144,26 +149,27 @@ async function pollLogin() {
 function onSiteLoaded() {
   const own = ownNavigation;
   ownNavigation = false;
-  if (account.linked) { if (!own) checkLink(); return; }   // logging out on the site reloads the page
+  if (account.linked) { if (!own) checkLink("load"); return; }   // logging out on the site reloads the page
   if (own) return;
   if (pairing) pollLogin();
-  else if (repairs < REPAIRS_PER_RUN) { repairs++; startLogin(); }
+  else if (repairs < REPAIRS_PER_RUN) { repairs++; startLogin({ delay: SETTLE_MS }); }
 }
 
 // There is one login, not two that can disagree. The launcher asks the site whether its link
 // still stands at start and whenever the embedded view loads a page by itself. A link the site
 // has ended (revoked on the profile, logged out in the view) is dropped here as well, and the
 // login page comes back; logging in there links the launcher again without further questions.
-const LINK_CHECK_SPACING_MS = 10000, LINK_CHECK_EVERY_MS = 600000;
+const LINK_CHECK_SPACING_MS = 10000, LINK_CHECK_EVERY_MS = 600000, SETTLE_MS = 1500;
 let lastLinkCheck = 0, linkCheckTimer = null;
 
-async function checkLink() {
+// `why` is what prompted the question: "start", a page "load" in the embedded view, or the "timer".
+async function checkLink(why = "timer") {
   if (!account.linked) return;
   const wait = LINK_CHECK_SPACING_MS - (Date.now() - lastLinkCheck);
   if (wait > 0) {
     // Asked a moment ago. Ask again when the spacing allows instead of dropping the question:
     // a logout right after the launcher started would otherwise go unnoticed.
-    if (!linkCheckTimer) linkCheckTimer = setTimeout(() => { linkCheckTimer = null; checkLink(); }, wait + 50);
+    if (!linkCheckTimer) linkCheckTimer = setTimeout(() => { linkCheckTimer = null; checkLink(why); }, wait + 50);
     return;
   }
   lastLinkCheck = Date.now();
@@ -172,7 +178,12 @@ async function checkLink() {
     if (r.status !== "revoked") return;
     await refreshAccount();
     status("You are logged out of BlizzNux.com.");
-    startLogin();
+    // Found on a page load: the user has just logged out on the site and is looking at its front
+    // page. Pair quietly and leave that page alone; the login box is for a launcher that starts
+    // logged out, not for someone who has just chosen to log out. Otherwise show the front page
+    // afresh, after the page that is loading at start has settled.
+    if (why === "load") startLogin({ navigate: false });
+    else startLogin({ delay: why === "start" ? SETTLE_MS : 0 });
   } catch (e) { console.error(e); }
 }
 
@@ -546,12 +557,12 @@ async function init() {
   const acct = await refreshAccount();
   // One navigation only: two loads racing before the session cookie exists leave the page with a
   // CSRF token that does not match the stored session, and the first login attempt fails.
-  if (st.installed && !acct.linked) startLogin(); else { showSite(FORUM); checkLink(); }
+  if (st.installed && !acct.linked) startLogin(); else { showSite(FORUM); checkLink("start"); }
   checkUpdate(version);
   checkBattlenet();
   invoke("flush_reports").then((n) => { if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`); }).catch(() => {});
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
-  setInterval(checkLink, LINK_CHECK_EVERY_MS);   // a link ended from another browser is noticed without a restart
+  setInterval(() => checkLink("timer"), LINK_CHECK_EVERY_MS);   // a link ended from another browser is noticed without a restart
 }
 
 init();
