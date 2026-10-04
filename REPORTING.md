@@ -97,13 +97,15 @@ the launcher plants in its own cookie store.
    Response `201 {"pair_id": "<public id>", "pair_secret": "<≥32 chars>", "expires_in": 600}`.
    CSRF-exempt (desktop app). Rate-limit 10 per minute per IP.
 2. **Cookie.** The launcher writes `bz_pair=<pair_id>; Domain=blizznux.com; Path=/; Secure;
-   HttpOnly; SameSite=None; Max-Age=600` into its own WebKit cookie store, then loads
-   `https://blizznux.com/launcher/link` (no parameters) in its embedded view. Only the
+   HttpOnly; SameSite=None; Max-Age=600` into its own WebKit cookie store, then loads the
+   forum's front page, `https://blizznux.com/` (no parameters), in its embedded view. Only the
    launcher can plant that cookie; page script cannot read it; a crafted link, another site or
    a phishing page cannot set cookies for blizznux.com in anyone's browser.
-3. **Login.** For a logged-out visitor the page opens Flarum's standard LogInModal at once,
-   "Remember me" pre-ticked (sign-up and password reset as on the site); a "Log in to link the
-   launcher" button reopens the modal if dismissed.
+3. **Login.** An account is optional. On a full page load from a logged-out visitor whose
+   request carries an open pairing cookie, the site opens Flarum's standard LogInModal,
+   "Remember me" pre-ticked (sign-up and password reset as on the site), once per pairing; it
+   can be closed and the visitor browses on. `/launcher/link` stays for people who open it by
+   hand.
 4. **Approve.** Once `app.session.user` exists (after the forum app has booted, so
    `app.session.csrfToken` is defined), the page calls `POST /api/launcher/link/approve` with
    an empty JSON body and the `X-CSRF-Token` header. The endpoint is browser-only and

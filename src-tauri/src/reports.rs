@@ -12,7 +12,9 @@ use crate::{current_prefix, home, load_config, save_config};
 
 pub const DEFAULT_REPORT_URL: &str = "https://blizznux.com/api/launcher/reports";
 pub const DEFAULT_LINK_URL: &str = "https://blizznux.com/api/launcher/link";
-pub const LINK_PAGE: &str = "https://blizznux.com/launcher/link";
+/// The page a launcher that is not logged in opens: the forum's front page. With the pairing cookie
+/// in place the site shows its login box there once, and it can be closed; nobody is made to log in.
+pub const LINK_PAGE: &str = "https://blizznux.com/";
 
 fn link_url() -> String {
     std::env::var("BLIZZNUX_LINK_URL").unwrap_or_else(|_| DEFAULT_LINK_URL.to_string())

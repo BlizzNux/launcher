@@ -4,7 +4,6 @@ const { invoke } = window.__TAURI__.core;
 const $ = (s) => document.querySelector(s);
 
 const FORUM = "https://blizznux.com/";
-const LINK_PAGE = `${FORUM}launcher/link`;
 const SITE_ORIGIN = "https://blizznux.com";
 const RELEASES = "https://api.github.com/repos/BlizzNux/launcher/releases/latest";
 
@@ -89,8 +88,9 @@ function pollDelay() { return Date.now() - pollStarted < POLL_FAST_FOR_MS ? POLL
 // not mistaken for the user having logged in.
 function showSite(url) { ownNavigation = true; $("#site").src = url; }
 
-// Not logged in: the embedded view goes to the site's login page, nothing else is shown.
-// The launcher pairs itself in the background and collects the token once the login lands.
+// Not logged in: the embedded view shows the site's front page, where the site opens its login
+// box once and lets the visitor close it. The launcher pairs itself in the background and
+// collects the token once a login lands; an account stays optional.
 async function startLogin() {
   stopPolling();
   try {
