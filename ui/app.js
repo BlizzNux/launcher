@@ -117,7 +117,8 @@ async function pollLogin() {
     if (r.status === "linked") {
       pairing = false;
       await refreshAccount();
-      showSite(FORUM);
+      // The view stays where it is: the login happened on the site's own page, which has just
+      // reloaded as logged in. Loading it once more would cut that page's requests short.
       if (r.returning) status(`Logged in as ${r.username}.`); else askSharing(r.username);
     } else if (r.status === "expired" || r.status === "none") {
       pairing = false;   // no new pairing by itself: a login or the Log in button starts the next one
