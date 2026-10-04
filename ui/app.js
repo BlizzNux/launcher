@@ -175,17 +175,6 @@ async function checkLink() {
   } catch (e) { console.error(e); }
 }
 
-// One button for both: the launcher's link and the site login in the embedded view.
-async function logOut() {
-  try {
-    await invoke("link_revoke");
-    await refreshAccount();
-    hidePanel();
-    status("Logged out.");
-    startLogin();
-  } catch (e) { status(String(e), true); }
-}
-
 // One inline question in the bar after linking; no dialog. Settings holds the switches after that.
 function askSharing(username) {
   $("#bar-notice-text").textContent = `Logged in as ${username}. Share compatibility reports with the community?`;
@@ -529,7 +518,6 @@ async function init() {
   $("#acct-link").onclick = () => { hidePanel(); startLogin(); };
   $("#site").addEventListener("load", onSiteLoaded);
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
-  $("#acct-unlink").onclick = logOut;
   $("#cfg-share").addEventListener("change", saveConfig);
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";

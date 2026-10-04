@@ -148,10 +148,9 @@ site means linked, logged out means not linked.
   Every other answer leaves the link alone.
 - **Revoke on the profile** ends the token and its web session, so the embedded view is
   logged out as well. The list of linked installs shows the latest token per install.
-- **Log out in the launcher.** `POST /api/launcher/link/revoke` with the same body, `204`
-  always (idempotent; 10 per minute per IP): the token is revoked and its web session ended.
-  The launcher also removes the site's login cookies from its own cookie store, forgets the
-  token, switches the sharing choices off and shows the login page again.
+- **Logging out.** There is one place to log out: the site's own menu in the embedded view.
+  The launcher has no log-out button of its own. When someone else logs in on the same
+  launcher, the sharing choices are switched off until that person has been asked.
 
 After linking, the launcher shows the sharing choices once (both off by default): share
 verification reports (launches and game sessions) and send bug reports automatically.

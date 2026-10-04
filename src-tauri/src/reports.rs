@@ -166,6 +166,11 @@ pub async fn link_poll(app: AppHandle) -> Result<LinkPoll, String> {
             let mut c = load_config();
             // The link was ended from the site's side and the same person is back: nothing to ask again.
             let returning = c.remove("LAST_USERNAME").map_or(false, |last| last == username) && c.contains_key("REPORTS_SHARE");
+            if !returning {
+                // Someone else, or a first login: nothing is shared until they have been asked.
+                c.insert("REPORTS_SHARE".into(), "0".into());
+                c.insert("BUG_AUTO".into(), "0".into());
+            }
             c.insert("USER_TOKEN".into(), token);
             c.insert("USERNAME".into(), username.clone());
             save_config(&c)?;
@@ -619,18 +624,6 @@ pub fn auto_bug_report(app: &AppHandle, comment: String) {
     });
 }
 
-/// Forget the link on this machine and switch the sharing choices off.
-fn unlink_account() -> Result<AccountStatus, String> {
-    let mut c = load_config();
-    c.remove("USER_TOKEN");
-    c.remove("USERNAME");
-    c.remove("LAST_USERNAME");
-    c.insert("REPORTS_SHARE".into(), "0".into());
-    c.insert("BUG_AUTO".into(), "0".into());
-    save_config(&c)?;
-    Ok(account_status())
-}
-
 /// What the site's answer to a link check means. Only a clear "no" ends the link; a site that is
 /// down, busy or does not know the question yet leaves it alone.
 fn check_outcome(code: u16) -> &'static str {
@@ -676,76 +669,6 @@ pub async fn link_check() -> Result<LinkCheck, String> {
         return Ok(LinkCheck { status: status.into(), username: String::new() });
     }
     Ok(LinkCheck { status: status.into(), username })
-}
-
-/// "Log out": one button for both logins. The site is told to end this launcher's link, the site
-/// login in the embedded view is removed from the launcher's own cookie store, and the link is
-/// forgotten here. The local parts happen even when the site cannot be reached.
-#[tauri::command]
-pub async fn link_revoke(app: AppHandle) -> Result<AccountStatus, String> {
-    let token = load_config().get("USER_TOKEN").cloned().unwrap_or_default();
-    if !token.is_empty() {
-        if let Ok(client) = http() {
-            let _ = client
-                .post(format!("{}/revoke", link_url()))
-                .json(&serde_json::json!({ "install_id": install_id(), "user_token": token }))
-                .send()
-                .await;
-        }
-    }
-    let _ = clear_site_login(&app);
-    unlink_account()
-}
-
-/// The site as the embedded view addresses it, for looking up its cookies.
-fn site_origin() -> String {
-    std::env::var("BLIZZNUX_LINK_PAGE")
-        .ok()
-        .and_then(|p| p.parse::<url::Url>().ok())
-        .map(|u| format!("{}/", u.origin().ascii_serialization()))
-        .unwrap_or_else(|| "https://blizznux.com/".into())
-}
-
-/// Log the embedded view out of the site by removing the site's cookies from the launcher's own
-/// cookie store. Waits until they are gone, so the page that loads next is really logged out: a
-/// link made before the site tied links to its login would otherwise log straight back in.
-fn clear_site_login(app: &AppHandle) -> Result<(), String> {
-    let main = app.get_webview_window("main").ok_or("main window missing")?;
-    let origin = site_origin();
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    main.with_webview(move |platform| {
-        #[cfg(target_os = "linux")]
-        {
-            use std::cell::Cell;
-            use std::rc::Rc;
-            use webkit2gtk::{CookieManagerExt, WebContextExt, WebViewExt};
-            let none = None::<&webkit2gtk::gio::Cancellable>;
-            let Some(cm) = platform.inner().context().and_then(|ctx| ctx.cookie_manager()) else {
-                let _ = tx.send(());
-                return;
-            };
-            let deleter = cm.clone();
-            cm.cookies(&origin, none, move |found| {
-                let cookies = found.unwrap_or_default();
-                let left = Rc::new(Cell::new(cookies.len()));
-                if cookies.is_empty() {
-                    let _ = tx.send(());
-                }
-                for mut cookie in cookies {
-                    let (left, tx) = (left.clone(), tx.clone());
-                    deleter.delete_cookie(&mut cookie, none, move |_| {
-                        left.set(left.get() - 1);
-                        if left.get() == 0 {
-                            let _ = tx.send(());
-                        }
-                    });
-                }
-            });
-        }
-    })
-    .map_err(|e| e.to_string())?;
-    let _ = rx.recv_timeout(Duration::from_secs(3));
-    Ok(())
 }
 
 /// True when the user linked an account and opted into community reports.

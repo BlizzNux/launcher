@@ -777,7 +777,6 @@ pub fn run() {
             reports::link_poll,
             reports::link_cancel,
             reports::link_check,
-            reports::link_revoke,
             updates::update_check,
             updates::update_install,
             updates::battlenet_update_check,
