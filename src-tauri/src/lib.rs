@@ -408,6 +408,30 @@ fn readiness() -> Vec<Check> {
         blocking: true,
     });
 
+    // A Proton build chosen in the settings has to exist. Without one the wrapper downloads the
+    // launcher's own build on first use; unpacking it needs xz.
+    let chosen = load_config().get("PROTON").filter(|p| !p.is_empty()).map(PathBuf::from);
+    let xz = on_path("xz");
+    let (ok, detail) = match (&chosen, reports::own_proton()) {
+        (Some(p), _) if p.join("proton").is_file() => (true, "found (the build chosen in Settings)".to_string()),
+        (Some(p), _) => (false, format!("no Proton build at {}", p.display())),
+        (None, Some(_)) => (true, "found (the launcher's own build)".to_string()),
+        (None, None) if xz => (true, "not downloaded yet; the launcher fetches its own build on first use".to_string()),
+        (None, None) => (false, "needs xz to unpack it, which was not found".to_string()),
+    };
+    out.push(Check {
+        name: "Proton".into(),
+        ok,
+        detail,
+        hint: match (&chosen, family) {
+            (Some(_), _) => "clear the Proton build field in Settings to use the launcher's own build".into(),
+            (None, "arch") => "sudo pacman -S xz".into(),
+            (None, "fedora") => "sudo dnf install xz".into(),
+            (None, _) => "sudo apt install xz-utils".into(),
+        },
+        blocking: true,
+    });
+
     let curl = on_path("curl");
     out.push(Check {
         name: "curl".into(),
@@ -511,6 +535,15 @@ fn fix_steps(check: &str) -> Option<Vec<String>> {
         ("umu-launcher", "debian") => {
             steps.push("apt-get update".into());
             steps.push("apt-get install -y python3".into());
+        }
+        // The launcher's own Proton is downloaded by the wrapper; only xz can be missing for it.
+        // A build chosen in Settings that is not there is for the user to correct.
+        ("Proton", _) if load_config().get("PROTON").map_or(false, |p| !p.is_empty()) => return None,
+        ("Proton", "arch") => steps.push("pacman -S --needed --noconfirm xz".into()),
+        ("Proton", "fedora") => steps.push("dnf -y install xz".into()),
+        ("Proton", "debian") => {
+            steps.push("apt-get update".into());
+            steps.push("apt-get install -y xz-utils".into());
         }
         ("curl", "arch") => steps.push("pacman -S --needed --noconfirm curl".into()),
         ("curl", "fedora") => steps.push("dnf -y install curl".into()),

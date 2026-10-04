@@ -46,9 +46,12 @@ are best effort; please report what you find. Guides and the compatibility list 
   one is used. Otherwise the launcher downloads umu's own
   [release](https://github.com/Open-Wine-Components/umu-launcher/releases) into its data folder
   on first use; no root needed.
-- `curl`, `bash`, `python3`.
-- A Proton build. If Proton-CachyOS or GE-Proton is already present it is used; otherwise umu
-  downloads the latest GE-Proton on first run.
+- `curl`, `bash`, `python3`, `xz`.
+- Proton. The launcher downloads its own build on first use (Proton-CachyOS's
+  [release](https://github.com/CachyOS/proton-cachyos/releases) for any distribution, about
+  320 MB) into its data folder, and every install runs on that same build. It moves to a newer
+  one with a launcher release, after Blizzard's games ran on it. To use another build, enter
+  its folder in Settings or pass `--proton DIR`.
 - Vulkan drivers for your GPU (Mesa for AMD/Intel, the proprietary driver for NVIDIA).
 
 ## Install

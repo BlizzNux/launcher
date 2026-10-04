@@ -310,29 +310,49 @@ fn gpus() -> Vec<Gpu> {
     out
 }
 
+/// The Proton build in a folder of builds: the newest one that is complete. The wrapper unpacks
+/// the launcher's own build there and removes the one before it.
+fn proton_under(dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("proton").is_file())
+        .max_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// What the wrapper is doing in that folder right now, if it is fetching a build: it downloads
+/// to a `.part` file and unpacks in `.unpack`. One that was left behind long ago does not count.
+fn proton_arriving(dir: &Path) -> Option<String> {
+    let fresh = |p: &Path, secs: u64| fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(false, |age| age < Duration::from_secs(secs));
+    if fresh(&dir.join(".unpack"), 600) {
+        return Some("Unpacking Proton. Battle.net starts when that is done.".into());
+    }
+    let part = fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().map_or(false, |x| x == "part") && fresh(p, 60))?;
+    let mb = fs::metadata(&part).map(|m| m.len() / 1_048_576).unwrap_or(0);
+    Some(format!("Downloading Proton (once), {mb} MB so far. Battle.net starts when that is done."))
+}
+
+fn proton_dir() -> PathBuf {
+    std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".local/share")).join("blizznux").join("proton")
+}
+
+/// The launcher's own Proton, which the wrapper downloads into the data folder on first use.
+pub(crate) fn own_proton() -> Option<PathBuf> {
+    proton_under(&proton_dir())
+}
+
+/// The build chosen in the settings, else the launcher's own.
 fn proton_in_use() -> String {
     let cfg = load_config();
-    let mut dir: Option<PathBuf> = cfg.get("PROTON").filter(|p| !p.is_empty()).map(PathBuf::from);
-    if dir.is_none() {
-        if let Ok(rd) = fs::read_dir("/usr/share/steam/compatibilitytools.d") {
-            dir = rd.flatten().map(|e| e.path()).find(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("proton-cachyos")) && p.join("proton").is_file());
-        }
-    }
-    if dir.is_none() {
-        let ge = home().join(".local/share/Steam/compatibilitytools.d");
-        if let Ok(rd) = fs::read_dir(&ge) {
-            let mut v: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("GE-Proton"))).collect();
-            v.sort();
-            dir = v.pop();
-        }
-    }
+    let dir = cfg.get("PROTON").filter(|p| !p.is_empty()).map(PathBuf::from).or_else(own_proton);
     match dir {
         Some(d) => {
             let ver = fs::read_to_string(d.join("version")).unwrap_or_default();
             let ver = ver.split_whitespace().last().unwrap_or("").to_string();
             if ver.is_empty() { d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() } else { ver }
         }
-        None => "GE-Proton (downloaded by umu)".into(),
+        None => "not downloaded yet".into(),
     }
 }
 
@@ -1218,12 +1238,18 @@ fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str,
 /// After Launch: did the Battle.net client actually come up? Reports ok/failed when sharing.
 pub fn watch_launch(app: AppHandle) {
     std::thread::spawn(move || {
-        let start = Instant::now();
+        let mut start = Instant::now();
         let mut ok = false;
         while start.elapsed() < Duration::from_secs(120) {
             if game_running(&["Battle.net.exe", "Battle.net Launcher.exe", "Battle.net-Setup.exe"]) {
                 ok = true;
                 break;
+            }
+            // The first start downloads the launcher's own Proton before anything else. That is
+            // not Battle.net failing to start: the two minutes count from the end of it.
+            if let Some(doing) = proton_arriving(&proton_dir()) {
+                start = Instant::now();
+                let _ = app.emit("launch-progress", doing);
             }
             std::thread::sleep(Duration::from_secs(3));
         }
@@ -1366,6 +1392,28 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_launchers_own_proton_is_the_complete_build_in_its_folder() {
+        let dir = std::env::temp_dir().join(format!("blizznux-proton-test-{}", std::process::id()));
+        assert_eq!(proton_under(&dir), None);
+        // A download and an unpacking that were cut off are not a build.
+        fs::create_dir_all(dir.join(".unpack/proton-cachyos-11.0-20260703-slr-x86_64")).unwrap();
+        fs::write(dir.join("proton-cachyos-11.0-20260703-slr-x86_64.tar.xz.part"), "").unwrap();
+        assert_eq!(proton_under(&dir), None);
+        let build = dir.join("proton-cachyos-11.0-20260703-slr-x86_64");
+        fs::create_dir_all(&build).unwrap();
+        fs::write(build.join("proton"), "").unwrap();
+        assert_eq!(proton_under(&dir), Some(build));
+        // The files just written there are an unpacking and a download under way.
+        assert!(proton_arriving(&dir).unwrap().starts_with("Unpacking Proton"));
+        fs::remove_dir_all(dir.join(".unpack")).unwrap();
+        assert!(proton_arriving(&dir).unwrap().starts_with("Downloading Proton (once), 0 MB"));
+        fs::remove_file(dir.join("proton-cachyos-11.0-20260703-slr-x86_64.tar.xz.part")).unwrap();
+        assert_eq!(proton_arriving(&dir), None);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(proton_arriving(&dir), None);
+    }
 
     #[test]
     fn the_start_time_is_read_past_an_awkward_program_name() {

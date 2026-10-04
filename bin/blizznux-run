@@ -18,6 +18,15 @@ UMU_VERSION=1.4.4
 UMU_URL=https://github.com/Open-Wine-Components/umu-launcher/releases/download/$UMU_VERSION/umu-launcher-$UMU_VERSION-zipapp.tar
 UMU_SHA256=eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851
 UMU_DIR=$DATA_DIR/umu
+# The Proton build every install runs on unless another one is chosen: Proton-CachyOS's own release for
+# any distribution, kept in the launcher's data folder. It moves to a newer build only after Blizzard's
+# games ran on that one; change the version, the checksum and the size together.
+PROTON_VERSION=cachyos-11.0-20260703-slr
+PROTON_NAME=proton-$PROTON_VERSION-x86_64
+PROTON_URL=https://github.com/CachyOS/proton-cachyos/releases/download/$PROTON_VERSION/$PROTON_NAME.tar.xz
+PROTON_SHA256=62ff4b2750180723cc00538608fe687e21d1d91a31ef64ce1a7c9f46c3db310b
+PROTON_MB=320
+PROTON_DIR=$DATA_DIR/proton
 
 PREFIX=""; PROTON=""; OFFLOAD=auto; GAME=""
 
@@ -34,12 +43,14 @@ Usage:
   blizznux-run dpi N                    Set the Windows DPI inside the prefix (96 = 100%, 144 = 150%).
   blizznux-run umu                      Make sure umu-launcher is available (downloads it when the
                                         system has none) and show which one is used.
+  blizznux-run proton                   Make sure Proton is available (downloads the launcher's own
+                                        build when none was chosen) and show which one is used.
   blizznux-run doctor                   Show what would be used and why.
 
 Options:
   --prefix DIR      Prefix to use for this run (default: \$XDG_DATA_HOME/blizznux/prefix).
-  --proton DIR      Proton build to use (default: Proton-CachyOS if installed, else newest GE-Proton,
-                    else let umu download GE-Proton).
+  --proton DIR      Proton build to use (default: the launcher's own tested build, downloaded on
+                    first use).
   --offload on|off  NVIDIA PRIME render offload (default: auto, on when a hybrid NVIDIA setup is found).
 
 Game codes for --game: WoW, WTCG (Hearthstone), Hero (Heroes of the Storm), Pro (Overwatch),
@@ -83,18 +94,61 @@ save_config() {
 	{ printf 'PREFIX=%s\nPROTON=%s\nOFFLOAD=%s\n' "$PREFIX" "$PROTON" "$OFFLOAD"; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
+proton_sum_ok() { echo "$PROTON_SHA256  $1" | sha256sum -c --quiet - >/dev/null 2>&1; }
+
+# Downloads the Proton archive to $1, continuing a file that is already partly there.
+download_proton() {
+	curl -fL --retry 3 -sS -C - -o "$1" "$PROTON_URL" &
+	local pid=$!
+	while kill -0 "$pid" 2>/dev/null; do
+		sleep 5
+		log "Proton: $(( $(stat -c %s "$1" 2>/dev/null || echo 0) / 1048576 )) of $PROTON_MB MB"
+	done
+	wait "$pid"
+}
+
+fetch_proton() {
+	command -v xz >/dev/null || die "xz is needed to unpack Proton (install the xz or xz-utils package)"
+	mkdir -p "$PROTON_DIR"
+	local part=$PROTON_DIR/$PROTON_NAME.tar.xz.part
+	if ! proton_sum_ok "$part"; then
+		log "downloading Proton $PROTON_VERSION (about $PROTON_MB MB, once)"
+		local rc=0
+		download_proton "$part" || rc=$?
+		if (( rc == 22 || rc == 33 )); then
+			# The server will not continue this file (it is all there but damaged): fetch it from the start.
+			rm -f "$part"; rc=0
+			download_proton "$part" || rc=$?
+		fi
+		(( rc == 0 )) || die "could not download Proton"
+		if ! proton_sum_ok "$part"; then
+			rm -f "$part"
+			die "the Proton download is damaged (checksum mismatch); start again to download it afresh"
+		fi
+	fi
+	log "unpacking Proton"
+	local tmp=$PROTON_DIR/.unpack
+	rm -rf "$tmp"
+	mkdir -p "$tmp"
+	tar -xf "$part" -C "$tmp" || die "could not unpack Proton"
+	# An earlier build of the launcher's own Proton is not needed any more, unless Battle.net still runs on it.
+	if ! pgrep -f "$PROTON_DIR/" >/dev/null 2>&1; then
+		find "$PROTON_DIR" -mindepth 1 -maxdepth 1 -name 'proton-*' ! -name "$PROTON_NAME.tar.xz.part" -exec rm -rf {} +
+	fi
+	rm -rf "${PROTON_DIR:?}/$PROTON_NAME"
+	mv "$tmp/$PROTON_NAME" "$PROTON_DIR/$PROTON_NAME"
+	rm -rf "$tmp" "$part"
+}
+
+# Proton to use: the build chosen in the config or with --proton, else the launcher's own (downloaded on
+# first use). The system's Proton is not used by itself: it changes with every system update.
 find_proton() {
 	if [[ -n $PROTON ]]; then
 		[[ -x $PROTON/proton ]] || die "no Proton build at $PROTON"
 		echo "$PROTON"; return
 	fi
-	local d
-	for d in /usr/share/steam/compatibilitytools.d/proton-cachyos*; do
-		[[ -x $d/proton ]] && { echo "$d"; return; }
-	done
-	d=$(ls -d "$HOME"/.local/share/Steam/compatibilitytools.d/GE-Proton* 2>/dev/null | sort -V | tail -1 || true)
-	[[ -n $d && -x $d/proton ]] && { echo "$d"; return; }
-	echo "GE-Proton"   # umu-launcher downloads the latest GE-Proton on first use
+	[[ -x $PROTON_DIR/$PROTON_NAME/proton ]] || fetch_proton >&2   # callers read the path from stdout
+	echo "$PROTON_DIR/$PROTON_NAME"
 }
 
 hybrid_nvidia() {
@@ -205,6 +259,11 @@ cmd_umu() {
 	echo "$umu $("$umu" --version 2>/dev/null | head -1)"
 }
 
+cmd_proton() {
+	local proton; proton=$(find_proton)
+	echo "$proton $(awk '{print $NF; exit}' "$proton/version" 2>/dev/null)"
+}
+
 cmd_doctor() {
 	ensure_prefix
 	local umu; umu=$(command -v umu-run || true)
@@ -215,7 +274,13 @@ cmd_doctor() {
 	else
 		echo "umu-run:   not installed (downloaded on first use)"
 	fi
-	echo "proton:    $(find_proton)"
+	if [[ -n $PROTON ]]; then
+		echo "proton:    $PROTON $([[ -x $PROTON/proton ]] && echo '(chosen in the settings)' || echo '(no Proton build there)')"
+	elif [[ -x $PROTON_DIR/$PROTON_NAME/proton ]]; then
+		echo "proton:    $PROTON_DIR/$PROTON_NAME (the launcher's own)"
+	else
+		echo "proton:    $PROTON_VERSION, the launcher's own (downloaded on first use)"
+	fi
 	echo "prefix:    $PREFIX $([[ -f $PREFIX/$LAUNCHER_REL ]] && echo '(Battle.net installed)' || echo '(Battle.net not installed)')"
 	echo "offload:   $OFFLOAD $(hybrid_nvidia && echo '(hybrid NVIDIA detected)' || echo '(no hybrid NVIDIA)')"
 	echo "config:    $CONFIG"
@@ -225,7 +290,7 @@ load_config
 cmd=launch
 while (( $# )); do
 	case $1 in
-	launch|install|import|dpi|umu|doctor) cmd=$1 ;;
+	launch|install|import|dpi|umu|proton|doctor) cmd=$1 ;;
 	--game) GAME=${2:?--game needs a code}; shift ;;
 	--prefix) PREFIX=${2:?--prefix needs a directory}; shift ;;
 	--proton) PROTON=${2:?--proton needs a directory}; shift ;;
@@ -242,5 +307,6 @@ install) keep_log; cmd_install ;;
 import) cmd_import "${1:-}" ;;
 dpi) keep_log; cmd_dpi "${1:-}" ;;
 umu) cmd_umu ;;
+proton) cmd_proton ;;
 doctor) cmd_doctor ;;
 esac

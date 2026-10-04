@@ -525,6 +525,7 @@ async function init() {
   window.__TAURI__.event.listen("game-ended", onGameEnded);
   window.__TAURI__.event.listen("session-state", (e) => showSession(e.payload));
   window.__TAURI__.event.listen("game-closed-early", onGameClosedEarly);
+  window.__TAURI__.event.listen("launch-progress", (e) => status(String(e.payload)));
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
   $("#acct-link").onclick = () => { hidePanel(); startLogin(); };
