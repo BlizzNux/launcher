@@ -153,10 +153,18 @@ function onSiteLoaded() {
 // still stands at start and whenever the embedded view loads a page by itself. A link the site
 // has ended (revoked on the profile, logged out in the view) is dropped here as well, and the
 // login page comes back; logging in there links the launcher again without further questions.
-let lastLinkCheck = 0;
+const LINK_CHECK_SPACING_MS = 10000, LINK_CHECK_EVERY_MS = 600000;
+let lastLinkCheck = 0, linkCheckTimer = null;
 
 async function checkLink() {
-  if (!account.linked || Date.now() - lastLinkCheck < 10000) return;
+  if (!account.linked) return;
+  const wait = LINK_CHECK_SPACING_MS - (Date.now() - lastLinkCheck);
+  if (wait > 0) {
+    // Asked a moment ago. Ask again when the spacing allows instead of dropping the question:
+    // a logout right after the launcher started would otherwise go unnoticed.
+    if (!linkCheckTimer) linkCheckTimer = setTimeout(() => { linkCheckTimer = null; checkLink(); }, wait + 50);
+    return;
+  }
   lastLinkCheck = Date.now();
   try {
     const r = await invoke("link_check");
@@ -554,6 +562,7 @@ async function init() {
   checkBattlenet();
   invoke("flush_reports").then((n) => { if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`); }).catch(() => {});
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
+  setInterval(checkLink, LINK_CHECK_EVERY_MS);   // a link ended from another browser is noticed without a restart
 }
 
 init();

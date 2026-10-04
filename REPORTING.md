@@ -141,8 +141,9 @@ site means linked, logged out means not linked.
   session is alive; `401` when it is unknown, revoked, belongs to another install, or its web
   session is gone (logged out in the embedded view, expired, or revoked on the profile);
   `429` with `Retry-After` when rate-limited (30 per minute per token). The launcher asks once
-  at start and after each page load that the embedded view does by itself, at most every ten
-  seconds. Only `401` ends the link: the launcher forgets the token, keeps the sharing choices
+  at start, after each page load that the embedded view does by itself (at least ten seconds
+  apart; a question that comes too soon is asked late, not dropped), and every ten minutes
+  while it is linked. Only `401` ends the link: the launcher forgets the token, keeps the sharing choices
   and starts a pairing, so a login in the embedded view links it again without a question.
   Every other answer leaves the link alone.
 - **Revoke on the profile** ends the token and its web session, so the embedded view is
