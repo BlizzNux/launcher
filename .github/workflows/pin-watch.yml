@@ -1,0 +1,48 @@
+name: Pin watch
+
+# Once a day: is there a newer Proton-CachyOS or umu-launcher release than the one the launcher
+# pins? A newer one is put on a branch with its checksum, checked through the wrapper, and
+# proposed in public (scripts/pin-watch.sh). Nothing is released from here: the pin moves in a
+# launcher release after Battle.net and the games ran on the new build.
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Look for newer releases and move the pin
+        id: pin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          scripts/pin-watch.sh check > "$RUNNER_TEMP/changes.txt"
+          cat "$RUNNER_TEMP/changes.txt"
+          if [ -s "$RUNNER_TEMP/changes.txt" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Both pins are the newest release."
+          fi
+
+      - name: Download and unpack the new pin through the wrapper
+        if: steps.pin.outputs.changed == 'true'
+        run: |
+          bash -n bin/blizznux-run
+          export XDG_DATA_HOME=$RUNNER_TEMP/data XDG_CONFIG_HOME=$RUNNER_TEMP/config XDG_CACHE_HOME=$RUNNER_TEMP/cache
+          bin/blizznux-run umu
+          bin/blizznux-run proton
+
+      - name: Propose it
+        if: steps.pin.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/pin-watch.sh propose "$RUNNER_TEMP/changes.txt"

@@ -25,7 +25,7 @@ jobs:
 
       - name: Shell scripts parse
         run: |
-          for f in bin/blizznux-run scripts/release.sh scripts/container-build.sh install.sh flatpak/build.sh; do
+          for f in bin/blizznux-run scripts/release.sh scripts/container-build.sh scripts/pin-watch.sh install.sh flatpak/build.sh; do
             bash -n "$f"
           done
 
