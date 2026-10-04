@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Karl Bullock. Licensed under the GPL-3.0-or-later; see LICENSE.
 set -euo pipefail
 
-VERSION=0.2.18
+VERSION=0.2.19
 APP=blizznux
 CONFIG_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/$APP
 DATA_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/$APP
