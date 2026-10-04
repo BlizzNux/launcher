@@ -585,30 +585,42 @@ fn wow_product(code: &str, flavor: &str) -> Option<String> {
     })
 }
 
-/// The `.build.info` row for what actually ran. World of Warcraft keeps every flavour in one
-/// folder with one row per product, so the row is the one of the flavour the game ran from; when
-/// that flavour has no row there is no version, rather than another flavour's.
-fn build_row<'a>(rows: &'a [BTreeMap<String, String>], code: &str, flavor: &str) -> Option<&'a BTreeMap<String, String>> {
-    match wow_product(code, flavor) {
-        Some(product) => rows.iter().find(|r| r.get("Product").map_or(false, |p| *p == product)),
+/// The product a World of Warcraft folder belongs to, as Blizzard records it in the folder's own
+/// `.flavor.info` (a header line, then the product name).
+fn flavor_product(root: &Path, flavor: &str) -> Option<String> {
+    let text = fs::read_to_string(root.join(flavor).join(".flavor.info")).ok()?;
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).nth(1).map(String::from)
+}
+
+/// The `.build.info` row for what actually ran. World of Warcraft keeps every version in one
+/// folder with one row per product, so with a product the row is that product's; when it has no
+/// row there is no version, rather than another version's. Other games have a single product.
+fn build_row<'a>(rows: &'a [BTreeMap<String, String>], product: Option<&str>) -> Option<&'a BTreeMap<String, String>> {
+    match product {
+        Some(product) => rows.iter().find(|r| r.get("Product").map_or(false, |p| p == product)),
         None => rows.iter().find(|r| r.get("Active").map_or(false, |a| a == "1")).or_else(|| rows.first()),
     }
 }
 
-/// Does the site file sessions of this game? It follows the three live World of Warcraft products;
-/// a test realm, beta or Anniversary session has no thread to go to and would read as a Retail
-/// patch there, so those sessions are not reported and nothing is asked about them.
+/// Is a session of this game reported at all? Everything is, except World of Warcraft's test and
+/// beta clients. Which of the live versions get a thread is the site's decision, not the
+/// launcher's: it files the ones its update bot follows and only records the rest.
 fn is_reported(code: &str, flavor: &str) -> bool {
-    code != "WoW" || matches!(flavor, "" | "_retail_" | "_classic_" | "_classic_era_")
+    code != "WoW" || !(flavor.contains("ptr") || flavor.contains("beta"))
 }
 
-/// The name the site files a game under; World of Warcraft's classic clients have their own.
-fn game_name(g: &(&'static str, &'static str, &'static str, &'static [&'static str]), flavor: &str) -> &'static str {
-    match (g.0, flavor) {
-        ("WoW", "_classic_era_") => "WoW Classic Era",
-        ("WoW", "_classic_") => "WoW Classic",
-        _ => g.1,
+/// The name the site files a game under. World of Warcraft's other versions are named after
+/// their folder: `_classic_era_` → "WoW Classic Era", `_anniversary_` → "WoW Anniversary".
+fn game_name(g: &(&'static str, &'static str, &'static str, &'static [&'static str]), flavor: &str) -> String {
+    if g.0 != "WoW" || matches!(flavor, "" | "_retail_") {
+        return g.1.to_string();
     }
+    let words: Vec<String> = flavor
+        .split('_')
+        .filter(|w| !w.is_empty())
+        .map(|w| w[..1].to_uppercase() + &w[1..])
+        .collect();
+    format!("WoW {}", words.join(" "))
 }
 
 pub fn game_info(id: &str) -> Option<GameInfo> {
@@ -616,17 +628,19 @@ pub fn game_info(id: &str) -> Option<GameInfo> {
     let g = game_by_code(code)?;
     let root = game_root(&current_prefix(), g);
     let rows = build_info(&root.join(".build.info")).unwrap_or_default();
-    let row = build_row(&rows, g.0, ran_from);
+    // Which of World of Warcraft's products ran: the folder says so itself, else by its name.
+    let product = wow_product(g.0, ran_from).map(|by_name| flavor_product(&root, ran_from).unwrap_or(by_name));
+    let row = build_row(&rows, product.as_deref());
     let version = row.and_then(|r| r.get("Version")).filter(|v| !v.is_empty()).cloned();
     // Hearthstone has no `.build.info`; its version only lives in `.product.db`. That file is the
-    // folder's main product, so it cannot stand in for a World of Warcraft flavour.
+    // folder's main product, so it cannot stand in for a World of Warcraft version.
     let version = match version {
         Some(v) => v,
-        None if wow_product(g.0, ran_from).is_some() => String::new(),
+        None if product.is_some() => String::new(),
         None => fs::read(root.join(".product.db")).ok().and_then(|b| product_db_version(&b)).unwrap_or_default(),
     };
     // Only World of Warcraft has flavours as far as reports go; the field stays empty for the rest.
-    let flavor = if wow_product(g.0, ran_from).is_some() {
+    let flavor = if product.is_some() {
         ran_from
     } else {
         match row.and_then(|r| r.get("Product")).map(String::as_str).unwrap_or_default() {
@@ -637,7 +651,7 @@ pub fn game_info(id: &str) -> Option<GameInfo> {
             _ => "",
         }
     };
-    Some(GameInfo { code: g.0.into(), name: game_name(g, flavor).into(), flavor: flavor.into(), version })
+    Some(GameInfo { code: g.0.into(), name: game_name(g, flavor), flavor: flavor.into(), version })
 }
 
 fn install_id() -> String {
@@ -923,11 +937,11 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
         }
         if let Some((code, flavor)) = game.as_deref().map(split_game) {
             if !is_reported(code, flavor) {
-                return Err(invalid("sessions on test, beta and Anniversary realms are not reported"));
+                return Err(invalid("sessions on test and beta realms are not reported"));
             }
         }
         if body["game"]["version"].as_str().map_or(true, str::is_empty) {
-            let name = game.as_deref().map(split_game).and_then(|(code, flavor)| game_by_code(code).map(|g| game_name(g, flavor))).unwrap_or("the game");
+            let name = game.as_deref().map(split_game).and_then(|(code, flavor)| game_by_code(code).map(|g| game_name(g, flavor))).unwrap_or_else(|| "the game".to_string());
             return Err(BuildError::UnknownBuild(format!(
                 "The launcher cannot tell which build of {name} is installed, so the site has nothing to file this report under. Please tell BlizzNux through \"Report a problem\" in Settings."
             )));
@@ -1312,7 +1326,7 @@ pub fn watch_session(app: AppHandle) {
                     Some((g, flavor_of(&process_path(pid)), Instant::now(), process_age(pid).unwrap_or(0)))
                 });
             }
-            let now = SessionState { battlenet, game: current.as_ref().map(|c| game_name(c.0, &c.1).to_string()) };
+            let now = SessionState { battlenet, game: current.as_ref().map(|c| game_name(c.0, &c.1)) };
             let changed = SESSION.lock().map(|mut s| if *s != now { *s = now.clone(); true } else { false }).unwrap_or(false);
             if changed {
                 let _ = app.emit("session-state", &now);
@@ -1368,7 +1382,7 @@ mod tests {
     #[test]
     fn each_wow_flavour_gets_its_own_build_and_never_anothers() {
         let rows = wow_rows();
-        let version = |flavor| build_row(&rows, "WoW", flavor).and_then(|r| r.get("Version")).cloned();
+        let version = |flavor| build_row(&rows, wow_product("WoW", flavor).as_deref()).and_then(|r| r.get("Version")).cloned();
         assert_eq!(version("_retail_").as_deref(), Some("12.1.0.69933"));
         assert_eq!(version("_classic_era_").as_deref(), Some("1.15.9.70003"));
         assert_eq!(version("_classic_"), None);   // not installed: no build, not Retail's
@@ -1379,12 +1393,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_live_wow_products_are_reported() {
-        for live in ["", "_retail_", "_classic_", "_classic_era_"] {
+    fn test_and_beta_realms_are_not_reported() {
+        for live in ["", "_retail_", "_classic_", "_classic_era_", "_anniversary_", "_classic_titan_"] {
             assert!(is_reported("WoW", live));
         }
-        for other in ["_ptr_", "_xptr_", "_beta_", "_classic_ptr_", "_classic_era_ptr_", "_anniversary_"] {
-            assert!(!is_reported("WoW", other));
+        for test in ["_ptr_", "_xptr_", "_beta_", "_classic_ptr_", "_classic_era_ptr_", "_classic_beta_"] {
+            assert!(!is_reported("WoW", test));
         }
         assert!(is_reported("Pro", "_retail_"));
         assert!(is_reported("WTCG", ""));
@@ -1396,6 +1410,9 @@ mod tests {
         assert_eq!(game_name(wow, "_classic_era_"), "WoW Classic Era");
         assert_eq!(game_name(wow, "_classic_"), "WoW Classic");
         assert_eq!(game_name(wow, "_retail_"), "World of Warcraft");
+        assert_eq!(game_name(wow, "_anniversary_"), "WoW Anniversary");
+        assert_eq!(game_name(wow, ""), "World of Warcraft");
+        assert_eq!(game_name(game_by_code("Pro").unwrap(), "_retail_"), "Overwatch 2");
         assert_eq!(split_game("WoW/_classic_era_"), ("WoW", "_classic_era_"));
         assert_eq!(split_game("Pro"), ("Pro", ""));
         assert_eq!(game_id("WoW", "_classic_era_"), "WoW/_classic_era_");
