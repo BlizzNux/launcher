@@ -1,6 +1,6 @@
 [package]
 name = "blizznux"
-version = "0.2.25"
+version = "0.2.26"
 description = "BlizzNux launcher: Battle.net games on Linux through Proton, no Steam needed"
 authors = ["Karl Bullock"]
 license = "GPL-3.0-or-later"
