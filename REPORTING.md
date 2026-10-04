@@ -113,11 +113,18 @@ the launcher plants in its own cookie store.
    (ordinary visitors see nothing); `404` unknown pair; `410` expired; `409` already used.
    The page shows "Linked to the BlizzNux launcher as <username>" on success.
 5. **Collect.** From the moment it opened the page, the launcher polls
-   `POST /api/launcher/link/poll` with `{"pair_id": "<id>", "pair_secret": "<secret>"}` every
-   two seconds: `202 {"status": "pending"}`; `201 {"token": "<≥32 chars [A-Za-z0-9._-]>",
+   `POST /api/launcher/link/poll` with `{"pair_id": "<id>", "pair_secret": "<secret>"}`: every
+   two seconds for the first two minutes, then every 15 seconds, and once at once whenever the
+   embedded view finishes loading a page (finishing the login reloads it). When the pairing
+   expires the launcher stops asking; it does not pair again by itself. A page load after that,
+   or the "Log in" button in Settings, starts a new pairing (at most three per run from page
+   loads). `429` and `5xx` are waited out: the launcher pauses for `Retry-After` seconds (30
+   when the header is missing) and carries on, giving up after five in a row. Answers:
+   `202 {"status": "pending"}`; `201 {"token": "<≥32 chars [A-Za-z0-9._-]>",
    "username": "<display name>"}` once approved (pairing consumed); `410 {"error":
    "expired"}` after 10 minutes; `404` for an unknown pair or wrong secret (one opaque answer
-   for both). CSRF-exempt; allow ~60 per minute per IP. On success the launcher deletes the
+   for both). CSRF-exempt; allow 60 per minute per pairing (a launcher sends at most 30),
+   with only a loose cap per IP, since several launchers can share one address. On success the launcher deletes the
    cookie and returns the embedded view to the forum, which is now logged in.
 6. The site stores the token with the user id, `install_id` and creation date, revocable from
    the user's profile. The launcher sends it as `user_token` on every report; an unknown or

@@ -71,9 +71,23 @@ async function refreshAccount() {
   return account;
 }
 
-let pollTimer;
+// Pacing of the login check. Every check starts the whole forum software on the server, so a
+// launcher nobody logs in to must not keep asking: quick while a login is likely, slower after
+// that, and not at all once the pairing has expired. A page load in the embedded view checks at
+// once, because finishing the login reloads the page.
+const POLL_FAST_MS = 2000, POLL_SLOW_MS = 15000, POLL_FAST_FOR_MS = 120000;
+const POLL_MAX_FAILURES = 5, REPAIRS_PER_RUN = 3;
+let pollTimer = null, pollStarted = 0, pollFailures = 0;
+let pairing = false;        // a pairing is open on the site and worth asking about
+let ownNavigation = false;  // the next page load in the embedded view is the launcher's doing
+let repairs = 0;
 
-function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+function stopPolling() { clearTimeout(pollTimer); pollTimer = null; }
+function schedulePoll(ms) { stopPolling(); pollTimer = setTimeout(pollLogin, ms); }
+function pollDelay() { return Date.now() - pollStarted < POLL_FAST_FOR_MS ? POLL_FAST_MS : POLL_SLOW_MS; }
+// Every page the launcher itself puts in the embedded view goes through here, so that its load is
+// not mistaken for the user having logged in.
+function showSite(url) { ownNavigation = true; $("#site").src = url; }
 
 // Not logged in: the embedded view goes to the site's login page, nothing else is shown.
 // The launcher pairs itself in the background and collects the token once the login lands.
@@ -81,36 +95,56 @@ async function startLogin() {
   stopPolling();
   try {
     const s = await invoke("link_start");
-    $("#site").src = s.url;
-    pollTimer = setInterval(pollLogin, 2000);
+    pairing = true; pollStarted = Date.now(); pollFailures = 0;
+    showSite(s.url);
+    schedulePoll(POLL_FAST_MS);
   } catch (e) {
+    pairing = false;
     console.error("pairing not started:", e);   // site unreachable: plain forum, try again next launch
-    $("#site").src = FORUM;
+    showSite(FORUM);
   }
 }
 
 let pollBusy = false;
 
 async function pollLogin() {
-  if (pollBusy || account.linked) return;   // one poll in flight; nothing to ask once linked
+  if (pollBusy || account.linked || !pairing) return;   // one poll in flight; nothing to ask once linked
   pollBusy = true;
+  stopPolling();
+  let next = null;
   try {
     const r = await invoke("link_poll");
     if (r.status === "linked") {
-      stopPolling();
+      pairing = false;
       await refreshAccount();
-      $("#site").src = FORUM;
+      showSite(FORUM);
       askSharing(r.username);
     } else if (r.status === "expired" || r.status === "none") {
-      stopPolling();
-      if (!account.linked) startLogin();   // keep the login page current while the user is away
+      pairing = false;   // no new pairing by itself: a login or the Log in button starts the next one
+    } else if (r.status === "busy") {
+      // The site asked for a pause (too many requests, or it is down): wait, then carry on.
+      if (++pollFailures < POLL_MAX_FAILURES) next = Math.max(r.retry_after || 30, 5) * 1000; else pairing = false;
+    } else {
+      pollFailures = 0;
+      next = pollDelay();
     }
   } catch (e) {
-    stopPolling();
+    pairing = false;
     console.error(e);
   } finally {
     pollBusy = false;
   }
+  if (next !== null && pairing) schedulePoll(next);
+}
+
+// The embedded view finished loading a page. While a pairing is open that may be the login having
+// gone through, so ask right away. After the pairing has expired it is the only sign of a late
+// login: pair again, a few times per run at most.
+function onSiteLoaded() {
+  if (account.linked) return;
+  if (ownNavigation) { ownNavigation = false; return; }
+  if (pairing) pollLogin();
+  else if (repairs < REPAIRS_PER_RUN) { repairs++; startLogin(); }
 }
 
 // One inline question in the bar after linking; no dialog. Settings holds the switches after that.
@@ -443,6 +477,7 @@ async function init() {
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
   $("#acct-link").onclick = () => { hidePanel(); startLogin(); };
+  $("#site").addEventListener("load", onSiteLoaded);
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#acct-unlink").onclick = async () => { try { await invoke("unlink_account"); await refreshAccount(); status("Logged out of the launcher."); } catch (e) { status(String(e), true); } };
   $("#cfg-share").addEventListener("change", saveConfig);
@@ -471,7 +506,7 @@ async function init() {
   const acct = await refreshAccount();
   // One navigation only: two loads racing before the session cookie exists leave the page with a
   // CSRF token that does not match the stored session, and the first login attempt fails.
-  if (st.installed && !acct.linked) startLogin(); else $("#site").src = FORUM;
+  if (st.installed && !acct.linked) startLogin(); else showSite(FORUM);
   checkUpdate(version);
   checkBattlenet();
   invoke("flush_reports").then((n) => { if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`); }).catch(() => {});

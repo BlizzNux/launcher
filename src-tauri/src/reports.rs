@@ -110,6 +110,23 @@ fn set_pair_cookie(app: &AppHandle, value: Option<String>) -> Result<(), String>
 pub struct LinkPoll {
     status: String,
     username: String,
+    /// Seconds to wait before asking again when `status` is "busy".
+    retry_after: u64,
+}
+
+fn poll_answer(status: &str, retry_after: u64) -> LinkPoll {
+    LinkPoll { status: status.into(), username: String::new(), retry_after }
+}
+
+/// How long to wait when the site cannot answer a poll right now, or None when the answer is not
+/// one to wait out. "Too many requests" and server errors are waited out, for as long as the site
+/// asks (Retry-After, in seconds) or half a minute. Giving up for the session instead left every
+/// launcher behind one shared address unable to notice a login.
+fn busy_wait(code: u16, retry_after: Option<u64>) -> Option<u64> {
+    match code {
+        429 | 500..=599 => Some(retry_after.filter(|s| *s > 0).unwrap_or(30).min(600)),
+        _ => None,
+    }
 }
 
 /// Ask the site whether the user has finished logging in; stores the token when they have.
@@ -117,23 +134,27 @@ pub struct LinkPoll {
 pub async fn link_poll(app: AppHandle) -> Result<LinkPoll, String> {
     let (pair_id, pair_secret, age) = {
         let g = PAIRING.lock().map_err(|e| e.to_string())?;
-        let Some(p) = g.as_ref() else { return Ok(LinkPoll { status: "none".into(), username: String::new() }) };
+        let Some(p) = g.as_ref() else { return Ok(poll_answer("none", 0)) };
         (p.pair_id.clone(), p.pair_secret.clone(), p.started.elapsed())
     };
     if age > Duration::from_secs(600) {
         *PAIRING.lock().map_err(|e| e.to_string())? = None;
-        return Ok(LinkPoll { status: "expired".into(), username: String::new() });
+        return Ok(poll_answer("expired", 0));
     }
-    let resp = http()?
+    let sent = http()?
         .post(format!("{}/poll", link_url()))
         .json(&serde_json::json!({ "pair_id": pair_id, "pair_secret": pair_secret }))
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .await;
+    let Ok(resp) = sent else { return Ok(poll_answer("busy", 30)) };   // site unreachable right now
     let code = resp.status().as_u16();
+    let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    if let Some(wait) = busy_wait(code, retry_after) {
+        return Ok(poll_answer("busy", wait));
+    }
     match code {
-        202 => Ok(LinkPoll { status: "pending".into(), username: String::new() }),
+        202 => Ok(poll_answer("pending", 0)),
         201 | 200 => {
             let token = body["token"].as_str().unwrap_or("").trim().to_string();
             let username = body["username"].as_str().unwrap_or("").trim().to_string();
@@ -146,11 +167,11 @@ pub async fn link_poll(app: AppHandle) -> Result<LinkPoll, String> {
             save_config(&c)?;
             *PAIRING.lock().map_err(|e| e.to_string())? = None;
             let _ = set_pair_cookie(&app, None);
-            Ok(LinkPoll { status: "linked".into(), username })
+            Ok(LinkPoll { status: "linked".into(), username, retry_after: 0 })
         }
         410 => {
             *PAIRING.lock().map_err(|e| e.to_string())? = None;
-            Ok(LinkPoll { status: "expired".into(), username: String::new() })
+            Ok(poll_answer("expired", 0))
         }
         _ => Err(body["error"].as_str().map(String::from).unwrap_or_else(|| format!("HTTP {code}"))),
     }
@@ -1123,6 +1144,18 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_site_is_waited_out() {
+        assert_eq!(busy_wait(429, Some(12)), Some(12));
+        assert_eq!(busy_wait(429, None), Some(30));
+        assert_eq!(busy_wait(429, Some(0)), Some(30));
+        assert_eq!(busy_wait(429, Some(86_400)), Some(600));
+        assert_eq!(busy_wait(503, None), Some(30));
+        for answered in [200, 201, 202, 404, 410] {
+            assert_eq!(busy_wait(answered, Some(5)), None);
+        }
+    }
 
     #[test]
     fn a_short_session_is_never_reported_by_itself() {
