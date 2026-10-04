@@ -55,6 +55,11 @@ local stub); the default is the URL above.
 ```
 
 `game` is absent for a bug report that is not tied to a game and for launch reports.
+World of Warcraft keeps all its flavours in one install folder, so the launcher reports the one
+that actually ran: `flavor` is the folder the game ran from (`_retail_`, `_classic_era_`,
+`_classic_`, …), `version` is that flavour's build, and `name` is "WoW Classic Era" or "WoW
+Classic" for those two (otherwise "World of Warcraft"); `code` stays `WoW`. When the build of
+the flavour that ran cannot be read, no run report is sent. `flavor` is empty for other games.
 `outcome` and `comment` are absent for bug reports; `log` is absent for successful runs and
 launches.
 

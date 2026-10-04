@@ -548,27 +548,89 @@ fn game_root(prefix: &Path, g: &(&str, &str, &str, &[&str])) -> PathBuf {
         .unwrap_or_else(|| prefix.join("drive_c/Program Files (x86)").join(g.2))
 }
 
-pub fn game_info(code: &str) -> Option<GameInfo> {
+/// A game as it travels through the report code: its launch code, optionally followed by the
+/// flavour folder it ran from (`WoW`, `WoW/_classic_era_`).
+fn split_game(id: &str) -> (&str, &str) {
+    id.split_once('/').unwrap_or((id, ""))
+}
+
+fn game_id(code: &str, flavor: &str) -> String {
+    if flavor.is_empty() { code.to_string() } else { format!("{code}/{flavor}") }
+}
+
+/// The flavour folder a game ran from, taken from the Windows path of its program
+/// (`…\World of Warcraft\_classic_era_\WowClassic.exe` → `_classic_era_`); empty when there is none.
+fn flavor_of(exe_path: &str) -> String {
+    let mut parts = exe_path.rsplit(|c| c == '\\' || c == '/');
+    parts.next();
+    match parts.next() {
+        Some(dir) if dir.len() > 2 && dir.starts_with('_') && dir.ends_with('_') => dir.to_lowercase(),
+        _ => String::new(),
+    }
+}
+
+/// Blizzard's product name for a World of Warcraft flavour folder (`_classic_era_` →
+/// `wow_classic_era`). Other games have one product per folder and need no such choice.
+fn wow_product(code: &str, flavor: &str) -> Option<String> {
+    if code != "WoW" {
+        return None;
+    }
+    let inner = flavor.strip_prefix('_')?.strip_suffix('_')?;
+    Some(match inner {
+        "retail" => "wow".into(),
+        "ptr" => "wowt".into(),
+        "xptr" => "wowxptr".into(),
+        "beta" => "wow_beta".into(),
+        other => format!("wow_{other}"),
+    })
+}
+
+/// The `.build.info` row for what actually ran. World of Warcraft keeps every flavour in one
+/// folder with one row per product, so the row is the one of the flavour the game ran from; when
+/// that flavour has no row there is no version, rather than another flavour's.
+fn build_row<'a>(rows: &'a [BTreeMap<String, String>], code: &str, flavor: &str) -> Option<&'a BTreeMap<String, String>> {
+    match wow_product(code, flavor) {
+        Some(product) => rows.iter().find(|r| r.get("Product").map_or(false, |p| *p == product)),
+        None => rows.iter().find(|r| r.get("Active").map_or(false, |a| a == "1")).or_else(|| rows.first()),
+    }
+}
+
+/// The name the site files a game under; World of Warcraft's classic clients have their own.
+fn game_name(g: &(&'static str, &'static str, &'static str, &'static [&'static str]), flavor: &str) -> &'static str {
+    match (g.0, flavor) {
+        ("WoW", "_classic_era_") => "WoW Classic Era",
+        ("WoW", "_classic_") => "WoW Classic",
+        _ => g.1,
+    }
+}
+
+pub fn game_info(id: &str) -> Option<GameInfo> {
+    let (code, ran_from) = split_game(id);
     let g = game_by_code(code)?;
     let root = game_root(&current_prefix(), g);
     let rows = build_info(&root.join(".build.info")).unwrap_or_default();
-    let row = rows.iter().find(|r| r.get("Active").map(|a| a == "1").unwrap_or(false)).or_else(|| rows.first());
-    // Hearthstone has no `.build.info`; its version only lives in `.product.db`.
-    let version = row
-        .and_then(|r| r.get("Version"))
-        .filter(|v| !v.is_empty())
-        .cloned()
-        .or_else(|| fs::read(root.join(".product.db")).ok().and_then(|b| product_db_version(&b)))
-        .unwrap_or_default();
-    let product = row.and_then(|r| r.get("Product")).cloned().unwrap_or_default();
-    let flavor = match product.as_str() {
-        "wow" => "_retail_",
-        "wow_classic" => "_classic_",
-        "wow_classic_era" => "_classic_era_",
-        "wowt" => "_ptr_",
-        _ => "",
+    let row = build_row(&rows, g.0, ran_from);
+    let version = row.and_then(|r| r.get("Version")).filter(|v| !v.is_empty()).cloned();
+    // Hearthstone has no `.build.info`; its version only lives in `.product.db`. That file is the
+    // folder's main product, so it cannot stand in for a World of Warcraft flavour.
+    let version = match version {
+        Some(v) => v,
+        None if wow_product(g.0, ran_from).is_some() => String::new(),
+        None => fs::read(root.join(".product.db")).ok().and_then(|b| product_db_version(&b)).unwrap_or_default(),
     };
-    Some(GameInfo { code: g.0.into(), name: g.1.into(), flavor: flavor.into(), version })
+    // Only World of Warcraft has flavours as far as reports go; the field stays empty for the rest.
+    let flavor = if wow_product(g.0, ran_from).is_some() {
+        ran_from
+    } else {
+        match row.and_then(|r| r.get("Product")).map(String::as_str).unwrap_or_default() {
+            "wow" => "_retail_",
+            "wow_classic" => "_classic_",
+            "wow_classic_era" => "_classic_era_",
+            "wowt" => "_ptr_",
+            _ => "",
+        }
+    };
+    Some(GameInfo { code: g.0.into(), name: game_name(g, flavor).into(), flavor: flavor.into(), version })
 }
 
 fn install_id() -> String {
@@ -853,7 +915,7 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
             return Err(invalid("outcome must be perfect, issues, broken or ok"));
         }
         if body["game"]["version"].as_str().map_or(true, str::is_empty) {
-            let name = game.as_deref().and_then(game_by_code).map_or("the game", |g| g.1);
+            let name = game.as_deref().map(split_game).and_then(|(code, flavor)| game_by_code(code).map(|g| game_name(g, flavor))).unwrap_or("the game");
             return Err(BuildError::UnknownBuild(format!(
                 "The launcher cannot tell which build of {name} is installed, so the site has nothing to file this report under. Please tell BlizzNux through \"Report a problem\" in Settings."
             )));
@@ -1170,6 +1232,12 @@ fn start_ticks(stat: &str) -> Option<u64> {
     stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// The program a process runs, as its command line names it (for Wine, the Windows path).
+fn process_path(pid: u32) -> String {
+    let cmd = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    String::from_utf8_lossy(cmd.split(|b| *b == 0).next().unwrap_or(&[])).to_string()
+}
+
 /// Seconds since the process started. The kernel reports 100 clock ticks per second to user
 /// space on Linux.
 fn process_age(pid: u32) -> Option<u64> {
@@ -1207,31 +1275,30 @@ pub fn battlenet_running() -> bool {
 /// processes; nothing is asked of the site.
 pub fn watch_session(app: AppHandle) {
     std::thread::spawn(move || {
-        // The game being followed: its entry, when it was first seen, and how long it had run by then.
-        let mut current: Option<(&(&str, &str, &str, &[&str]), Instant, u64)> = None;
+        // The game being followed: its entry, the flavour folder it runs from, when it was first
+        // seen, and how long it had run by then.
+        let mut current: Option<(&(&str, &str, &str, &[&str]), String, Instant, u64)> = None;
         loop {
             let prefix = current_prefix();
             let battlenet = !pids_of(&BATTLENET, Some(&prefix)).is_empty();
-            match current {
-                Some((g, seen, age)) => {
-                    if pids_of(g.3, Some(&prefix)).is_empty() {
-                        let secs = age + seen.elapsed().as_secs();
-                        let (event, record_ok) = session_end(secs);
-                        if record_ok {
-                            auto_report(&app, "run", Some(g.0.to_string()), "ok", format!("ran for {} min", secs / 60));
-                        }
-                        let _ = app.emit(event, serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
-                        current = None;
+            let ended = matches!(&current, Some((g, ..)) if pids_of(g.3, Some(&prefix)).is_empty());
+            if ended {
+                if let Some((g, flavor, seen, age)) = current.take() {
+                    let secs = age + seen.elapsed().as_secs();
+                    let id = game_id(g.0, &flavor);
+                    let (event, record_ok) = session_end(secs);
+                    if record_ok {
+                        auto_report(&app, "run", Some(id.clone()), "ok", format!("ran for {} min", secs / 60));
                     }
+                    let _ = app.emit(event, serde_json::json!({ "code": id, "name": game_name(g, &flavor), "seconds": secs }));
                 }
-                None => {
-                    current = GAMES.iter().find_map(|g| {
-                        let pid = pids_of(g.3, Some(&prefix)).into_iter().min()?;
-                        Some((g, Instant::now(), process_age(pid).unwrap_or(0)))
-                    });
-                }
+            } else if current.is_none() {
+                current = GAMES.iter().find_map(|g| {
+                    let pid = pids_of(g.3, Some(&prefix)).into_iter().min()?;
+                    Some((g, flavor_of(&process_path(pid)), Instant::now(), process_age(pid).unwrap_or(0)))
+                });
             }
-            let now = SessionState { battlenet, game: current.map(|c| c.0 .1.to_string()) };
+            let now = SessionState { battlenet, game: current.as_ref().map(|c| game_name(c.0, &c.1).to_string()) };
             let changed = SESSION.lock().map(|mut s| if *s != now { *s = now.clone(); true } else { false }).unwrap_or(false);
             if changed {
                 let _ = app.emit("session-state", &now);
@@ -1267,6 +1334,46 @@ mod tests {
         assert!(names_program(r"C:\Program Files (x86)\Battle.net\Battle.net.exe", &BATTLENET));
         assert!(!names_program(r"C:\Program Files (x86)\Battle.net\Battle.net-Setup.exe", &BATTLENET));
         assert!(!names_program("/usr/bin/sleep", overwatch));
+    }
+
+    fn wow_rows() -> Vec<BTreeMap<String, String>> {
+        [("wow", "12.1.0.69933"), ("wow_classic_era", "1.15.9.70003")]
+            .iter()
+            .map(|(product, version)| BTreeMap::from([("Active".to_string(), "1".to_string()), ("Product".to_string(), product.to_string()), ("Version".to_string(), version.to_string())]))
+            .collect()
+    }
+
+    #[test]
+    fn the_flavour_comes_from_the_folder_the_game_ran_from() {
+        assert_eq!(flavor_of(r"C:\Program Files (x86)\World of Warcraft\_classic_era_\WowClassic.exe"), "_classic_era_");
+        assert_eq!(flavor_of(r"C:\Program Files (x86)\World of Warcraft\_retail_\WoW.exe"), "_retail_");
+        assert_eq!(flavor_of(r"C:\Program Files (x86)\Hearthstone\Hearthstone.exe"), "");
+        assert_eq!(flavor_of("Overwatch.exe"), "");
+    }
+
+    #[test]
+    fn each_wow_flavour_gets_its_own_build_and_never_anothers() {
+        let rows = wow_rows();
+        let version = |flavor| build_row(&rows, "WoW", flavor).and_then(|r| r.get("Version")).cloned();
+        assert_eq!(version("_retail_").as_deref(), Some("12.1.0.69933"));
+        assert_eq!(version("_classic_era_").as_deref(), Some("1.15.9.70003"));
+        assert_eq!(version("_classic_"), None);   // not installed: no build, not Retail's
+        assert_eq!(version("").as_deref(), Some("12.1.0.69933"));   // flavour unknown: as before
+        assert_eq!(wow_product("WoW", "_ptr_").as_deref(), Some("wowt"));
+        assert_eq!(wow_product("WoW", "_classic_era_ptr_").as_deref(), Some("wow_classic_era_ptr"));
+        assert_eq!(wow_product("Pro", "_retail_"), None);
+    }
+
+    #[test]
+    fn classic_clients_are_named_as_the_site_files_them() {
+        let wow = game_by_code("WoW").unwrap();
+        assert_eq!(game_name(wow, "_classic_era_"), "WoW Classic Era");
+        assert_eq!(game_name(wow, "_classic_"), "WoW Classic");
+        assert_eq!(game_name(wow, "_retail_"), "World of Warcraft");
+        assert_eq!(split_game("WoW/_classic_era_"), ("WoW", "_classic_era_"));
+        assert_eq!(split_game("Pro"), ("Pro", ""));
+        assert_eq!(game_id("WoW", "_classic_era_"), "WoW/_classic_era_");
+        assert_eq!(game_id("WTCG", ""), "WTCG");
     }
 
     #[test]
