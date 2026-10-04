@@ -1392,9 +1392,13 @@ fn keep_agent_findable(file: &Path, battlenet: bool, agents: usize, main: Option
     Some(main)
 }
 
-/// A line in the launcher's log, next to what the wrapper writes there.
+/// A line in the launcher's log, next to what the wrapper writes there. The unit tests go
+/// through the same code and must not write into the log of the machine they run on.
 fn note(text: &str) {
     use std::io::Write;
+    if cfg!(test) {
+        return;
+    }
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(crate::log_path()) {
         let _ = writeln!(f, "[blizznux] {text}");
     }
