@@ -1318,6 +1318,8 @@ fn process_age(pid: u32) -> Option<u64> {
 }
 
 const BATTLENET: [&str; 2] = ["Battle.net.exe", "Battle.net Launcher.exe"];
+/// Blizzard's Agent, which installs and updates the games (the path ends in `\Agent.exe` or `/Agent.exe`).
+const AGENT: [&str; 2] = ["\\Agent.exe", "/Agent.exe"];
 
 /// What the launcher sees running in its prefix right now.
 #[derive(Clone, PartialEq, serde::Serialize)]
@@ -1339,6 +1341,80 @@ pub fn battlenet_running() -> bool {
     session_state().battlenet
 }
 
+/// Blizzard's Agent keeps the local port it listens on in this file. Battle.net and the games
+/// read it to find the Agent that is already running.
+fn agent_port_file(prefix: &Path) -> PathBuf {
+    prefix.join("drive_c/ProgramData/Battle.net/Agent/Agent.dat")
+}
+
+fn port_in(file: &Path) -> Option<u16> {
+    fs::read_to_string(file).ok()?.trim().parse().ok()
+}
+
+/// Does a Blizzard Agent answer on this local port? It answers a request for its own state with
+/// the state, or with "not authorised" when no session key comes with it, as here.
+fn agent_answers(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(700)));
+    let _ = s.set_write_timeout(Some(Duration::from_millis(300)));
+    if s.write_all(b"GET /agent HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut head = [0u8; 12];
+    s.read_exact(&mut head).is_ok() && (&head == b"HTTP/1.1 401" || &head == b"HTTP/1.1 200")
+}
+
+/// Keeps the Agent's port file pointing at the Agent of this Battle.net session. Heroes of the
+/// Storm starts an Agent of its own beside the running one; that copy takes another port and
+/// writes it to the file. When it leaves with the game, the file names a port nobody listens on,
+/// the next game finds no Agent and starts yet another copy, and whichever copy closes last
+/// saves its own, older list of installed games: games installed in that session are forgotten.
+/// So once the port in the file has gone quiet while the session's Agent still answers, the
+/// file gets that Agent's port back. `main` is the port this session's Agent was found on, and
+/// the new value of it is returned; it is learnt while a single Agent runs.
+fn keep_agent_findable(file: &Path, battlenet: bool, agents: usize, main: Option<u16>) -> Option<u16> {
+    if !battlenet {
+        return None;
+    }
+    let now = port_in(file);
+    let Some(main) = main else {
+        return now.filter(|p| agents == 1 && agent_answers(*p));
+    };
+    if now == Some(main) {
+        return Some(main);
+    }
+    if !agent_answers(main) {
+        return None; // the session's Agent has gone or moved: learn again
+    }
+    if now.map_or(true, |p| !agent_answers(p)) && fs::write(file, main.to_string()).is_ok() {
+        note(&format!("the Agent's port file named port {}, where no Agent answers; set back to {main}", now.map_or("none".into(), |p| p.to_string())));
+    }
+    Some(main)
+}
+
+/// A line in the launcher's log, next to what the wrapper writes there.
+fn note(text: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(crate::log_path()) {
+        let _ = writeln!(f, "[blizznux] {text}");
+    }
+}
+
+/// What the launcher sees of the Agent in its prefix (for `--cli agent-state`).
+pub fn agent_state() -> serde_json::Value {
+    let prefix = current_prefix();
+    let port = port_in(&agent_port_file(&prefix));
+    serde_json::json!({
+        "port_file": agent_port_file(&prefix),
+        "port": port,
+        "answers": port.map_or(false, agent_answers),
+        "agents_running": pids_of(&AGENT, Some(&prefix)).len(),
+        "battlenet_running": !pids_of(&BATTLENET, Some(&prefix)).is_empty(),
+    })
+}
+
 /// Watches the launcher's prefix for as long as the launcher is open: is Battle.net running, and
 /// which game. Who started them, and when, does not matter. Battle.net left open after a game,
 /// or started before the launcher was, is followed just the same, and every game session in it
@@ -1349,9 +1425,12 @@ pub fn watch_session(app: AppHandle) {
         // The game being followed: its entry, the flavour folder it runs from, when it was first
         // seen, and how long it had run by then.
         let mut current: Option<(&(&str, &str, &str, &[&str]), String, Instant, u64)> = None;
+        // The port this Battle.net session's Agent was found on.
+        let mut agent_port: Option<u16> = None;
         loop {
             let prefix = current_prefix();
             let battlenet = !pids_of(&BATTLENET, Some(&prefix)).is_empty();
+            agent_port = keep_agent_findable(&agent_port_file(&prefix), battlenet, pids_of(&AGENT, Some(&prefix)).len(), agent_port);
             let ended = matches!(&current, Some((g, ..)) if pids_of(g.3, Some(&prefix)).is_empty());
             if ended {
                 if let Some((g, flavor, seen, age)) = current.take() {
@@ -1392,6 +1471,82 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for a program listening on a local port: answers every request with this
+    /// status line until it is dropped.
+    struct Listener(u16, std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Listener {
+        fn answering(status: &'static str) -> Listener {
+            use std::io::{Read, Write};
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stopped = stop.clone();
+            std::thread::spawn(move || {
+                for s in l.incoming() {
+                    if stopped.load(std::sync::atomic::Ordering::SeqCst) { break }
+                    let Ok(mut s) = s else { continue };
+                    let _ = s.read(&mut [0u8; 256]);
+                    let _ = s.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes());
+                }
+            });
+            Listener(port, stop)
+        }
+    }
+    impl Drop for Listener {
+        fn drop(&mut self) {
+            self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect(("127.0.0.1", self.0)); // wakes the thread so it closes the port
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[test]
+    fn an_agent_is_told_from_other_programs_and_from_a_quiet_port() {
+        let agent = Listener::answering("401 Unauthorized");
+        let other = Listener::answering("404 Not Found");
+        assert!(agent_answers(agent.0));
+        assert!(!agent_answers(other.0));
+        let port = agent.0;
+        drop(agent);
+        assert!(!agent_answers(port));
+    }
+
+    #[test]
+    fn the_port_file_is_set_back_once_a_games_own_agent_has_gone() {
+        let dir = std::env::temp_dir().join(format!("blizznux-agent-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Agent.dat");
+        let port = || fs::read_to_string(&file).unwrap();
+
+        // Battle.net starts its Agent: the launcher learns the port, and only while Battle.net runs.
+        let main = Listener::answering("401 Unauthorized");
+        fs::write(&file, main.0.to_string()).unwrap();
+        assert_eq!(keep_agent_findable(&file, false, 1, None), None);
+        assert_eq!(keep_agent_findable(&file, true, 2, None), None);
+        let known = keep_agent_findable(&file, true, 1, None);
+        assert_eq!(known, Some(main.0));
+
+        // A game starts an Agent of its own, which writes its port: left alone while it runs.
+        let copy = Listener::answering("401 Unauthorized");
+        fs::write(&file, copy.0.to_string()).unwrap();
+        assert_eq!(keep_agent_findable(&file, true, 2, known), known);
+        assert_eq!(port(), copy.0.to_string());
+
+        // The game and its Agent are gone: the file names the session's Agent again.
+        drop(copy);
+        assert_eq!(keep_agent_findable(&file, true, 1, known), known);
+        assert_eq!(port(), main.0.to_string());
+
+        // The session's own Agent is gone: nothing is written, and the port is learnt afresh.
+        let gone = main.0;
+        drop(main);
+        fs::write(&file, "1").unwrap();
+        assert_eq!(keep_agent_findable(&file, true, 1, Some(gone)), None);
+        assert_eq!(port(), "1");
+        assert_eq!(keep_agent_findable(&file, false, 0, Some(gone)), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_launchers_own_proton_is_the_complete_build_in_its_folder() {

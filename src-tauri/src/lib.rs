@@ -691,6 +691,7 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
                 }
             }
         }
+        "agent-state" => serde_json::to_string_pretty(&reports::agent_state()),
         "flush-reports" => Ok(format!("{} sent", tauri::async_runtime::block_on(reports::flush_reports()))),
         _ => { eprintln!("unknown command"); return 2; }
     };
