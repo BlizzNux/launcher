@@ -111,6 +111,9 @@ async fn fetch_json(url: String) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
+    if reports::battlenet_running() {
+        return Err("Battle.net is already running.".into());
+    }
     let script = script_path(&app).ok_or("blizznux-run not found (run install.sh)")?;
     let mut cmd = host_command(&script);
     if let Some(code) = game.as_deref().filter(|g| !g.is_empty()) {
@@ -130,7 +133,6 @@ fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
         let _ = child.wait();
     });
     reports::watch_launch(app.clone());
-    reports::watch_game(app.clone(), game.clone());
     Ok(script.display().to_string())
 }
 
@@ -694,6 +696,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            reports::watch_session(app.handle().clone());
             // blizznux.com is shown in a frame inside our own page. WebKitGTK refuses
             // third-party cookies by default, which would log the user out of the forum on
             // every visit, so allow cookies for the embedded site.
@@ -769,6 +772,7 @@ pub fn run() {
             reports::submit_report,
             reports::flush_reports,
             reports::account_status,
+            reports::session_state,
             reports::link_start,
             reports::link_poll,
             reports::link_cancel,

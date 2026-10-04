@@ -1081,55 +1081,116 @@ pub fn watch_launch(app: AppHandle) {
     });
 }
 
-/// Is one of the game's processes running? Looks at /proc/*/cmdline (Wine shows the .exe path).
-fn game_running(fragments: &[&str]) -> bool {
-    let Ok(rd) = fs::read_dir("/proc") else { return false };
-    for e in rd.flatten() {
-        let n = e.file_name();
-        if !n.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Ok(cmd) = fs::read(e.path().join("cmdline")) else { continue };
-        let first = cmd.split(|b| *b == 0).next().unwrap_or(&[]);
-        let first = String::from_utf8_lossy(first).to_lowercase();
-        if fragments.iter().any(|f| first.ends_with(&f.to_lowercase()) || first.contains(&format!("{}\\", f.to_lowercase())) || first.contains(&f.to_lowercase())) {
-            return true;
-        }
-    }
-    false
+/// Does this command line name one of the programs? Wine shows the Windows path of the .exe.
+fn names_program(first_arg: &str, fragments: &[&str]) -> bool {
+    let first = first_arg.to_lowercase();
+    fragments.iter().any(|f| first.contains(&f.to_lowercase()))
 }
 
-/// After a launch: wait for the game to appear (up to 15 min), then for it to end, then tell
-/// the UI so it can ask how the session went.
-pub fn watch_game(app: AppHandle, code: Option<String>) {
+/// Was this process started in the given Wine prefix? umu passes `<prefix>/pfx/`, a link back to
+/// the prefix itself, so both sides are resolved before they are compared.
+fn runs_in_prefix(pid: u32, prefix: &Path) -> bool {
+    let Ok(env) = fs::read(format!("/proc/{pid}/environ")) else { return false };
+    let Some(theirs) = env.split(|b| *b == 0).find_map(|kv| kv.strip_prefix(b"WINEPREFIX=")) else { return false };
+    let theirs = PathBuf::from(String::from_utf8_lossy(theirs).to_string());
+    matches!((fs::canonicalize(theirs), fs::canonicalize(prefix)), (Ok(a), Ok(b)) if a == b)
+}
+
+/// Process ids of the given programs, from /proc/*/cmdline. With a prefix, only the ones running
+/// in that Wine prefix: a Battle.net started by Steam or Lutris elsewhere is not the launcher's.
+fn pids_of(fragments: &[&str], prefix: Option<&Path>) -> Vec<u32> {
+    let mut found = Vec::new();
+    let Ok(rd) = fs::read_dir("/proc") else { return found };
+    for e in rd.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let Ok(cmd) = fs::read(e.path().join("cmdline")) else { continue };
+        let first = String::from_utf8_lossy(cmd.split(|b| *b == 0).next().unwrap_or(&[])).to_string();
+        if names_program(&first, fragments) && prefix.map_or(true, |p| runs_in_prefix(pid, p)) {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+/// Is one of these programs running, in any prefix?
+fn game_running(fragments: &[&str]) -> bool {
+    !pids_of(fragments, None).is_empty()
+}
+
+/// The start time of a process in clock ticks after boot, from the text of /proc/<pid>/stat.
+/// The program name sits in brackets and may itself contain spaces and brackets.
+fn start_ticks(stat: &str) -> Option<u64> {
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Seconds since the process started. The kernel reports 100 clock ticks per second to user
+/// space on Linux.
+fn process_age(pid: u32) -> Option<u64> {
+    let ticks = start_ticks(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
+    let uptime: f64 = fs::read_to_string("/proc/uptime").ok()?.split_whitespace().next()?.parse().ok()?;
+    Some((uptime as u64).saturating_sub(ticks / 100))
+}
+
+const BATTLENET: [&str; 2] = ["Battle.net.exe", "Battle.net Launcher.exe"];
+
+/// What the launcher sees running in its prefix right now.
+#[derive(Clone, PartialEq, serde::Serialize)]
+pub struct SessionState {
+    battlenet: bool,
+    /// Name of the game that is running, if any.
+    game: Option<String>,
+}
+
+static SESSION: std::sync::Mutex<SessionState> = std::sync::Mutex::new(SessionState { battlenet: false, game: None });
+
+#[tauri::command]
+pub fn session_state() -> SessionState {
+    SESSION.lock().map(|s| s.clone()).unwrap_or(SessionState { battlenet: false, game: None })
+}
+
+/// Is Battle.net running in the launcher's prefix, as far as the watcher has seen?
+pub fn battlenet_running() -> bool {
+    session_state().battlenet
+}
+
+/// Watches the launcher's prefix for as long as the launcher is open: is Battle.net running, and
+/// which game. Who started them, and when, does not matter. Battle.net left open after a game,
+/// or started before the launcher was, is followed just the same, and every game session in it
+/// ends with the same question and the same record as the first one. Only looks at local
+/// processes; nothing is asked of the site.
+pub fn watch_session(app: AppHandle) {
     std::thread::spawn(move || {
-        let candidates: Vec<&(&str, &str, &str, &[&str])> = match code.as_deref().and_then(game_by_code) {
-            Some(g) => vec![g],
-            None => GAMES.iter().collect(),
-        };
-        let start = Instant::now();
-        let mut running: Option<&(&str, &str, &str, &[&str])> = None;
-        while start.elapsed() < Duration::from_secs(15 * 60) {
-            if let Some(g) = candidates.iter().find(|g| game_running(g.3)) {
-                running = Some(g);
-                break;
-            }
-            std::thread::sleep(Duration::from_secs(5));
-        }
-        let Some(g) = running else { return };
-        let began = Instant::now();
+        // The game being followed: its entry, when it was first seen, and how long it had run by then.
+        let mut current: Option<(&(&str, &str, &str, &[&str]), Instant, u64)> = None;
         loop {
-            std::thread::sleep(Duration::from_secs(5));
-            if !game_running(g.3) {
-                break;
+            let prefix = current_prefix();
+            let battlenet = !pids_of(&BATTLENET, Some(&prefix)).is_empty();
+            match current {
+                Some((g, seen, age)) => {
+                    if pids_of(g.3, Some(&prefix)).is_empty() {
+                        let secs = age + seen.elapsed().as_secs();
+                        let (event, record_ok) = session_end(secs);
+                        if record_ok {
+                            auto_report(&app, "run", Some(g.0.to_string()), "ok", format!("ran for {} min", secs / 60));
+                        }
+                        let _ = app.emit(event, serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
+                        current = None;
+                    }
+                }
+                None => {
+                    current = GAMES.iter().find_map(|g| {
+                        let pid = pids_of(g.3, Some(&prefix)).into_iter().min()?;
+                        Some((g, Instant::now(), process_age(pid).unwrap_or(0)))
+                    });
+                }
             }
+            let now = SessionState { battlenet, game: current.map(|c| c.0 .1.to_string()) };
+            let changed = SESSION.lock().map(|mut s| if *s != now { *s = now.clone(); true } else { false }).unwrap_or(false);
+            if changed {
+                let _ = app.emit("session-state", &now);
+            }
+            std::thread::sleep(Duration::from_secs(3));
         }
-        let secs = began.elapsed().as_secs();
-        let (event, record_ok) = session_end(secs);
-        if record_ok {
-            auto_report(&app, "run", Some(g.0.to_string()), "ok", format!("ran for {} min", secs / 60));
-        }
-        let _ = app.emit(event, serde_json::json!({ "code": g.0, "name": g.1, "seconds": secs }));
     });
 }
 
@@ -1144,6 +1205,22 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_start_time_is_read_past_an_awkward_program_name() {
+        let stat = "4242 (Battle.net (x86) .exe) S 1 4242 4242 0 -1 4194560 100 0 0 0 7 3 0 0 20 0 9 0 987654 1000000 250 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+        assert_eq!(start_ticks(stat), Some(987654));
+        assert_eq!(start_ticks("garbage"), None);
+    }
+
+    #[test]
+    fn programs_are_recognised_by_their_windows_path() {
+        let overwatch = GAMES.iter().find(|g| g.0 == "Pro").unwrap().3;
+        assert!(names_program(r"C:\Program Files (x86)\Overwatch\_retail_\Overwatch.exe", overwatch));
+        assert!(names_program(r"C:\Program Files (x86)\Battle.net\Battle.net.exe", &BATTLENET));
+        assert!(!names_program(r"C:\Program Files (x86)\Battle.net\Battle.net-Setup.exe", &BATTLENET));
+        assert!(!names_program("/usr/bin/sleep", overwatch));
+    }
 
     #[test]
     fn a_busy_site_is_waited_out() {

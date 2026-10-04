@@ -329,16 +329,26 @@ async function refreshAddonsButton() {
   } catch { $("#open-addons").classList.add("hidden"); }
 }
 
+// What the launcher sees running in its prefix; kept current by the watcher on the Rust side,
+// whoever started Battle.net and whenever. The button says so instead of starting a second copy.
+let session = { battlenet: false, game: null };
+
+function showSession(s) {
+  if (s) session = s;
+  $("#launch").textContent = !state.installed ? "Set up Battle.net" : session.battlenet ? "Battle.net is running" : "Launch Battle.net";
+}
+
 async function refreshState(openSetupIfMissing = false) {
   try { state = await invoke("install_state"); } catch (e) { console.error(e); return state; }
   refreshAddonsButton();
-  $("#launch").textContent = state.installed ? "Launch Battle.net" : "Set up Battle.net";
+  showSession();
   if (openSetupIfMissing && !state.installed) { showPanel("setup"); loadChecks(); }
   return state;
 }
 
 async function launch(game) {
   if (!state.installed) { showPanel("setup"); loadChecks(); return; }
+  if (session.battlenet) { status(session.game ? `${session.game} is running.` : "Battle.net is already running."); return; }
   status(game ? `Starting Battle.net and launching ${game}…` : "Starting Battle.net…");
   try {
     await invoke("launch", { game: game || null });
@@ -473,6 +483,7 @@ async function init() {
   $("#report-skip").onclick = hidePanel;
   $("#report-comment").addEventListener("change", () => { if (report.body) previewReport(); });
   window.__TAURI__.event.listen("game-ended", onGameEnded);
+  window.__TAURI__.event.listen("session-state", (e) => showSession(e.payload));
   window.__TAURI__.event.listen("game-closed-early", onGameClosedEarly);
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
@@ -502,6 +513,7 @@ async function init() {
     } catch (e) { $("#setup-status").textContent = String(e).trim(); }
   };
   loadConfig();
+  try { showSession(await invoke("session_state")); } catch (e) { console.error(e); }
   const st = await refreshState(true);
   const acct = await refreshAccount();
   // One navigation only: two loads racing before the session cookie exists leave the page with a
