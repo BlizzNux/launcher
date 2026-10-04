@@ -60,6 +60,9 @@ that actually ran: `flavor` is the folder the game ran from (`_retail_`, `_class
 `_classic_`, …), `version` is that flavour's build, and `name` is "WoW Classic Era" or "WoW
 Classic" for those two (otherwise "World of Warcraft"); `code` stays `WoW`. When the build of
 the flavour that ran cannot be read, no run report is sent. `flavor` is empty for other games.
+Only the three live products are reported (`_retail_`, `_classic_`, `_classic_era_`): a session
+on a test realm, a beta or Anniversary sends nothing and asks nothing, because the site has no
+thread to file it under.
 `outcome` and `comment` are absent for bug reports; `log` is absent for successful runs and
 launches.
 

@@ -595,6 +595,13 @@ fn build_row<'a>(rows: &'a [BTreeMap<String, String>], code: &str, flavor: &str)
     }
 }
 
+/// Does the site file sessions of this game? It follows the three live World of Warcraft products;
+/// a test realm, beta or Anniversary session has no thread to go to and would read as a Retail
+/// patch there, so those sessions are not reported and nothing is asked about them.
+fn is_reported(code: &str, flavor: &str) -> bool {
+    code != "WoW" || matches!(flavor, "" | "_retail_" | "_classic_" | "_classic_era_")
+}
+
 /// The name the site files a game under; World of Warcraft's classic clients have their own.
 fn game_name(g: &(&'static str, &'static str, &'static str, &'static [&'static str]), flavor: &str) -> &'static str {
     match (g.0, flavor) {
@@ -913,6 +920,11 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
         let o = outcome.unwrap_or_default();
         if !matches!(o.as_str(), "perfect" | "issues" | "broken" | "ok") {
             return Err(invalid("outcome must be perfect, issues, broken or ok"));
+        }
+        if let Some((code, flavor)) = game.as_deref().map(split_game) {
+            if !is_reported(code, flavor) {
+                return Err(invalid("sessions on test, beta and Anniversary realms are not reported"));
+            }
         }
         if body["game"]["version"].as_str().map_or(true, str::is_empty) {
             let name = game.as_deref().map(split_game).and_then(|(code, flavor)| game_by_code(code).map(|g| game_name(g, flavor))).unwrap_or("the game");
@@ -1287,10 +1299,12 @@ pub fn watch_session(app: AppHandle) {
                     let secs = age + seen.elapsed().as_secs();
                     let id = game_id(g.0, &flavor);
                     let (event, record_ok) = session_end(secs);
-                    if record_ok {
-                        auto_report(&app, "run", Some(id.clone()), "ok", format!("ran for {} min", secs / 60));
+                    if is_reported(g.0, &flavor) {
+                        if record_ok {
+                            auto_report(&app, "run", Some(id.clone()), "ok", format!("ran for {} min", secs / 60));
+                        }
+                        let _ = app.emit(event, serde_json::json!({ "code": id, "name": game_name(g, &flavor), "seconds": secs }));
                     }
-                    let _ = app.emit(event, serde_json::json!({ "code": id, "name": game_name(g, &flavor), "seconds": secs }));
                 }
             } else if current.is_none() {
                 current = GAMES.iter().find_map(|g| {
@@ -1362,6 +1376,18 @@ mod tests {
         assert_eq!(wow_product("WoW", "_ptr_").as_deref(), Some("wowt"));
         assert_eq!(wow_product("WoW", "_classic_era_ptr_").as_deref(), Some("wow_classic_era_ptr"));
         assert_eq!(wow_product("Pro", "_retail_"), None);
+    }
+
+    #[test]
+    fn only_the_live_wow_products_are_reported() {
+        for live in ["", "_retail_", "_classic_", "_classic_era_"] {
+            assert!(is_reported("WoW", live));
+        }
+        for other in ["_ptr_", "_xptr_", "_beta_", "_classic_ptr_", "_classic_era_ptr_", "_anniversary_"] {
+            assert!(!is_reported("WoW", other));
+        }
+        assert!(is_reported("Pro", "_retail_"));
+        assert!(is_reported("WTCG", ""));
     }
 
     #[test]
