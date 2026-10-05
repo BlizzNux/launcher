@@ -23,11 +23,11 @@ UMU_DIR=$DATA_DIR/umu
 # The Proton build every install runs on: Proton-CachyOS's own release for
 # any distribution, kept in the launcher's data folder. It moves to a newer build only after Blizzard's
 # games ran on that one; change the version, the checksum and the size together.
-PROTON_VERSION=cachyos-11.0-20260703-slr
+PROTON_VERSION=cachyos-11.0-20261005-slr
 PROTON_NAME=proton-$PROTON_VERSION-x86_64
 PROTON_URL=https://github.com/CachyOS/proton-cachyos/releases/download/$PROTON_VERSION/$PROTON_NAME.tar.xz
-PROTON_SHA256=62ff4b2750180723cc00538608fe687e21d1d91a31ef64ce1a7c9f46c3db310b
-PROTON_MB=320
+PROTON_SHA256=096bfe73b506d6565b04ecc45214197a4091818f16ed91f5324b4d2082d0a263
+PROTON_MB=331
 PROTON_DIR=$DATA_DIR/proton
 
 PREFIX=""; OFFLOAD=auto; GAME=""
