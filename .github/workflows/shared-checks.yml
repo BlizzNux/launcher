@@ -1,0 +1,17 @@
+# ShellCheck (new warnings only) and Gitleaks (new commits), shared with every
+# Link Robins, BlizzNux and karl-bullock repo:
+# https://github.com/karl-bullock/ci-workflows. This repo is public, so it runs
+# on GitHub's hosted runners for free.
+name: Shared checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shared:
+    uses: karl-bullock/ci-workflows/.github/workflows/checks.yml@v1
