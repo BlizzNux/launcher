@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Only here for the ignore rule: version-update PRs stay off (limit 0),
+  # security updates keep running and obey the ignore list too.
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      # glib 0.18 is pinned by Tauri's Linux GUI stack (gtk-rs 0.18). It cannot
+      # move on its own, so every attempt fails; a Tauri upgrade moves it.
+      - dependency-name: glib
