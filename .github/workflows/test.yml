@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# The job only reads the code; nothing here writes to the repo.
+permissions:
+  contents: read
+
 jobs:
   test:
     # The same base the release bundles are built on (scripts/build-env/Dockerfile).
