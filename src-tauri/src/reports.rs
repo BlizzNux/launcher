@@ -1494,6 +1494,8 @@ pub fn watch_session(app: AppHandle) {
                             auto_report(&app, "run", Some(id.clone()), "ok", format!("ran for {} min", secs / 60));
                         }
                         let _ = app.emit(event, serde_json::json!({ "code": id, "name": game_name(g, &flavor), "seconds": secs }));
+                        #[cfg(target_os = "linux")]
+                        crate::notify::game_ended(&app, &game_name(g, &flavor));
                     }
                 }
             } else if current.is_none() && closing.map_or(true, |pid| !Path::new(&format!("/proc/{pid}")).exists()) {

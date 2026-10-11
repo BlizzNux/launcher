@@ -143,6 +143,9 @@ dependencies = [
 name = "blizznux"
 version = "0.2.29"
 dependencies = [
+ "gio",
+ "glib",
+ "gtk",
  "libc",
  "reqwest 0.12.28",
  "serde",
