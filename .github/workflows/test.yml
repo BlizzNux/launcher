@@ -36,3 +36,24 @@ jobs:
       - name: Unit tests
         working-directory: src-tauri
         run: cargo test --lib
+
+      # Clippy, Rust's linter. Only the bug-class groups fail the build:
+      # correctness (code that is outright wrong) and suspicious (code that is
+      # very likely wrong). Style and complexity lints are left alone, so this
+      # never forces a reformat or a refactor of working code.
+      - name: Clippy (bug-class lints)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D clippy::correctness -D clippy::suspicious
+
+      # Known vulnerabilities in any crate in Cargo.lock (RustSec database).
+      # Fails on a vulnerability; "unmaintained" and "unsound" notices are only
+      # printed. Two exist today, both deep in Tauri's Linux GUI stack (glib
+      # 0.18, proc-macro-error) and fixed only by a Tauri upgrade. Pinned and
+      # checksum-verified.
+      - name: Dependency audit (RustSec)
+        working-directory: src-tauri
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ca.tgz" "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz"
+          echo "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428  $RUNNER_TEMP/ca.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/ca.tgz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit" audit
