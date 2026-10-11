@@ -8,6 +8,6 @@ updates:
       interval: weekly
     open-pull-requests-limit: 0
     ignore:
-      # glib 0.18 is pinned by Tauri's Linux GUI stack (gtk-rs 0.18). It cannot
-      # move on its own, so every attempt fails; a Tauri upgrade moves it.
+      # glib 0.18 is the last GTK 3 binding and Tauri on Linux is built on GTK 3,
+      # so every attempt fails. Lift this once Tauri moves to GTK 4.
       - dependency-name: glib
