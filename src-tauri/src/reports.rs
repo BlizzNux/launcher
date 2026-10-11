@@ -273,7 +273,15 @@ pub struct SystemProfile {
     prefix_kind: String,
 }
 
+/// The graphics cards, looked up once per launcher run. Asking lspci wakes a sleeping NVIDIA
+/// card on a laptop, which took seconds every time a report was built; the cards do not change
+/// while the launcher runs.
 fn gpus() -> Vec<Gpu> {
+    static GPUS: std::sync::OnceLock<Vec<Gpu>> = std::sync::OnceLock::new();
+    GPUS.get_or_init(probe_gpus).clone()
+}
+
+fn probe_gpus() -> Vec<Gpu> {
     let mut out: Vec<Gpu> = Vec::new();
     // Names from lspci when present; vendor from sysfs so it works without lspci too.
     let lspci = run_capture("lspci", &["-nn"], Duration::from_secs(3)).unwrap_or_default();
@@ -768,7 +776,7 @@ pub fn auto_bug_report(app: &AppHandle, comment: String) {
     }
     let h = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Ok(body) = build_report("bug".into(), None, None, Some(comment)) {
+        if let Ok(body) = report_body("bug".into(), None, None, Some(comment)) {
             match send_report(body).await {
                 Ok(url) => { let _ = h.emit("report-sent", serde_json::json!({ "kind": "bug", "outcome": "sent", "url": url })); }
                 Err(e) => eprintln!("[report] bug not sent: {e}"),
@@ -962,9 +970,14 @@ impl BuildError {
     }
 }
 
-/// Build the JSON body for a report; the UI shows it before sending.
+/// Build the JSON body for a report; the UI shows it before sending. Off the window's thread:
+/// the system profile runs a few programs, and the window must not freeze meanwhile.
 #[tauri::command]
-pub fn build_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn build_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || report_body(kind, game, outcome, comment)).await.map_err(|e| e.to_string())?
+}
+
+pub fn report_body(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, String> {
     build(kind, game, outcome, comment).map_err(BuildError::text)
 }
 
@@ -1250,7 +1263,7 @@ fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str,
     let (kind, outcome) = (kind.to_string(), outcome.to_string());
     let h = app.clone();
     tauri::async_runtime::spawn(async move {
-        match build_report(kind.clone(), game, Some(outcome.clone()), Some(comment)) {
+        match report_body(kind.clone(), game, Some(outcome.clone()), Some(comment)) {
             Ok(body) => match send_report(body).await {
                 Ok(url) => {
                     mark_sent(&kind, &stamp);   // only an accepted report counts for today
@@ -1469,6 +1482,7 @@ pub fn watch_session(app: AppHandle) {
                     let secs = age + seen.elapsed().as_secs();
                     let id = game_id(g.0, &flavor);
                     let (event, record_ok) = session_end(secs);
+                    note(&format!("{} {} closed after {secs} s", now_iso(), game_name(g, &flavor)));
                     if is_reported(g.0, &flavor) {
                         if record_ok {
                             auto_report(&app, "run", Some(id.clone()), "ok", format!("ran for {} min", secs / 60));
@@ -1481,6 +1495,11 @@ pub fn watch_session(app: AppHandle) {
                     let pid = pids_of(g.3, Some(&prefix)).into_iter().min()?;
                     Some((g, flavor_of(&process_path(pid)), Instant::now(), process_age(pid).unwrap_or(0)))
                 });
+                if current.is_some() {
+                    // The game keeps the graphics card awake: look the cards up now, so the report
+                    // at the end of the session does not have to wake it again.
+                    std::thread::spawn(gpus);
+                }
             }
             let now = SessionState { battlenet, game: current.as_ref().map(|c| game_name(c.0, &c.1)) };
             let changed = SESSION.lock().map(|mut s| if *s != now { *s = now.clone(); true } else { false }).unwrap_or(false);
