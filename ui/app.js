@@ -473,6 +473,42 @@ async function saveConfig() {
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
 }
 
+// A forum page left open for hours goes quiet: its live connection drops on sleep or a network
+// change, or the site moves to a newer version under it. The page cannot be asked how it is doing
+// (another origin), so the launcher loads it fresh when the user comes back to a page that has
+// been left alone for a while or has slept since it loaded, never while they are using it.
+const STALE_AFTER_MS = 30 * 60 * 1000, SLEEP_TICK_MS = 60000, SLEEP_GAP_MS = 180000;
+let awaySince = 0, sleptSinceLoad = false, lastTick = Date.now();
+
+function goneAway() { if (!awaySince) awaySince = Date.now(); }
+
+function cameBack() {
+  const stale = sleptSinceLoad || (awaySince && Date.now() - awaySince >= STALE_AFTER_MS);
+  awaySince = 0;
+  if (!stale) return;
+  sleptSinceLoad = false;
+  showSite(FORUM);
+}
+
+function watchStaleness() {
+  // The window's own focus, not the page's: clicking into the forum moves focus between the two
+  // pages without the user going anywhere, and coming back by clicking the forum skips this page.
+  let focused = true;
+  window.__TAURI__.window.getCurrentWindow().onFocusChanged(({ payload }) => {
+    focused = payload;
+    if (focused) cameBack(); else goneAway();
+  });
+  // A timer that fires far too late means the machine was asleep in between.
+  setInterval(() => {
+    const now = Date.now();
+    if (now - lastTick > SLEEP_GAP_MS) {
+      sleptSinceLoad = true;
+      if (!focused) goneAway();
+    }
+    lastTick = now;
+  }, SLEEP_TICK_MS);
+}
+
 function initTitlebar() {
   const win = window.__TAURI__.window.getCurrentWindow();
   $("#win-min").onclick = () => win.minimize();
@@ -553,6 +589,7 @@ async function init() {
   invoke("flush_reports").then((n) => { if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`); }).catch(() => {});
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
   setInterval(() => checkLink("timer"), LINK_CHECK_EVERY_MS);   // a link ended from another browser is noticed without a restart
+  watchStaleness();
 }
 
 init();
