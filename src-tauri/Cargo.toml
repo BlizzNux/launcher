@@ -27,3 +27,6 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 webkit2gtk = "2.0"
 soup3 = "0.5"
 libc = "0.2"
+gio = "0.18"
+glib = "0.18"
+gtk = "0.18"

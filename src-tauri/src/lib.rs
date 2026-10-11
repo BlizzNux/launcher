@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 use tauri::{AppHandle, Manager};
 
 mod addons;
+#[cfg(target_os = "linux")]
+mod notify;
 mod reports;
 mod updates;
 
@@ -663,7 +665,7 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
                     Err(e) => { eprintln!("send error: {e}"); return 1; }
                 }
             } else {
-                match reports::build_report(kind.into(), game, outcome, comment) {
+                match reports::report_body(kind.into(), game, outcome, comment) {
                     Ok(body) => Ok(format!("{}\n(not sent; set BLIZZNUX_SEND=1 to send)", serde_json::to_string_pretty(&body).unwrap_or_default())),
                     Err(e) => { eprintln!("error: {e}"); return 1; }
                 }
@@ -707,6 +709,12 @@ pub fn run() {
     // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_window_event(|_, event| {
+            #[cfg(target_os = "linux")]
+            if let tauri::WindowEvent::Focused(true) = event {
+                notify::withdraw();
+            }
+        })
         .setup(|app| {
             reports::watch_session(app.handle().clone());
             // blizznux.com is shown in a frame inside our own page. WebKitGTK refuses
