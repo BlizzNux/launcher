@@ -10,7 +10,7 @@ body { display: flex; flex-direction: column; }
 
 /* ---- custom title bar (matches the site header) ---- */
 #titlebar { flex: none; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 6px 0 14px;
-  background: #0b1324; border-bottom: 1px solid #1a2745; user-select: none; }
+  background: #0b1324; user-select: none; }
 #titlebar img { width: 22px; height: 22px; border-radius: 6px; }
 #titlebar .title { font-weight: 700; font-size: 14px; flex: 1; }
 #titlebar .ver { font-weight: 400; color: var(--muted); margin-left: 6px; font-size: 13px; }
