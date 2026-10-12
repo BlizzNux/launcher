@@ -1,0 +1,8 @@
+{
+  // Tauri 2 is built on GTK 3, which ties gtk-rs to 0.18 (the last GTK 3
+  // binding). glib/gio/gtk 0.19+ are GTK 4 only and break the build next to
+  // Tauri's own 0.18 copies, so Renovate must not propose them, not even as a
+  // security fix (glib RUSTSEC-2024-0429 is dismissed as tolerable risk; the
+  // launcher does not use VariantStrIter). Drop this when Tauri moves to GTK 4.
+  ignoreDeps: ['glib', 'gio', 'gtk'],
+}
