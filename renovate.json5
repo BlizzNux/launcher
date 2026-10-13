@@ -5,4 +5,20 @@
   // security fix (glib RUSTSEC-2024-0429 is dismissed as tolerable risk; the
   // launcher does not use VariantStrIter). Drop this when Tauri moves to GTK 4.
   ignoreDeps: ['glib', 'gio', 'gtk'],
+
+  packageRules: [
+    // GitHub Actions minor/patch bumps change CI only, never what ships, so
+    // they merge themselves once every check on the PR is green. Majors, the
+    // Rust crates and the Tauri group (its CLI builds the release bundles)
+    // stay manual: anything on main goes out with the next release, and only
+    // a play test shows whether the games still start.
+    {
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['minor', 'patch', 'digest'],
+      automerge: true,
+      automergeType: 'pr',
+      platformAutomerge: false,
+      addLabels: ['automerge'],
+    },
+  ],
 }
