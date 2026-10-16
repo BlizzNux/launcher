@@ -1901,6 +1901,11 @@ mod tests {
         let seen = Instant::now();
         assert!(!wow_window_closed(&prefix, wow, "_retail_", seen, 0));
 
+        // File times come from the kernel's coarse clock, which can lag real time by a tick, so a
+        // log written right after `seen` could look older than the session. Real WoW writes its
+        // log seconds later; give this run's log the same clear margin.
+        std::thread::sleep(Duration::from_millis(50));
+
         // This run's log: still playing, then the window closes.
         fs::write(&gx, "LogOpen\nD3d12 Device Created\n").unwrap();
         assert!(!wow_window_closed(&prefix, wow, "_retail_", seen, 0));
