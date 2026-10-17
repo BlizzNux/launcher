@@ -1,0 +1,7 @@
+# cargo-audit configuration for the CI step "Dependency audit (RustSec)" (run from src-tauri).
+[advisories]
+# zip 4 is in the lockfile only through tauri-plugin-updater, and only for cfg(target_os = "windows"); the
+# Linux launcher never compiles or links it, and the launcher's own ZIP handling (addons) is on zip 9.
+# Every updater release so far (2.13.3, 2.14.0, 3.0.0-alpha.3) still requires zip ^4 there; drop these
+# three entries when it moves to zip >= 9.
+ignore = ["RUSTSEC-2026-0367", "RUSTSEC-2026-0368", "RUSTSEC-2026-0369"]
