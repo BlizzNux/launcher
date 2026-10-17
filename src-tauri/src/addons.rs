@@ -246,7 +246,7 @@ fn install_archive(addons_dir: &Path, bytes: &[u8]) -> Result<Vec<String>, Strin
     let mut has_toc = false;
     for i in 0..zip.len() {
         let f = zip.by_index(i).map_err(|e| e.to_string())?;
-        let name = f.name().to_string();
+        let name = f.name().map_err(|e| e.to_string())?.to_string();
         let Some(top) = name.split('/').next().filter(|t| !t.is_empty()) else { continue };
         if !tops.iter().any(|t| t == top) {
             tops.push(top.to_string());
