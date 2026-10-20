@@ -9,9 +9,9 @@ const RELEASES = "https://api.github.com/repos/BlizzNux/launcher/releases/latest
 
 let statusTimer;
 function status(msg, err = false) {
-  const el = $("#status"); el.textContent = msg; el.classList.toggle("err", err);
+  const el = $("#status"); el.textContent = msg; el.title = msg; el.classList.toggle("err", err);
   clearTimeout(statusTimer);
-  if (msg) statusTimer = setTimeout(() => { el.textContent = ""; }, 8000);
+  if (msg) statusTimer = setTimeout(() => { el.textContent = ""; el.title = ""; }, 8000);
 }
 
 let state = { installed: true, prefix: "", umu: true };

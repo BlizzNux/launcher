@@ -35,7 +35,7 @@ body { display: flex; flex-direction: column; }
 .play button { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 0 8px 8px 0; padding: 8px 12px; cursor: pointer; font: inherit; }
 .play button:hover, .flat:hover { border-color: var(--accent); }
-.status { font-size: 13px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32vw; }
+.status { font-size: 13px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
 .status.err { color: var(--accent-2); }
 .spacer { flex: 1; }
 .flat { background: none; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
