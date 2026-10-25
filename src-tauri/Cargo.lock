@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "blizznux"
-version = "0.2.36"
+version = "0.2.37"
 dependencies = [
  "gio",
  "glib",
