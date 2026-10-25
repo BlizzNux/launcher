@@ -391,6 +391,18 @@ fn proton_in_use() -> String {
     }
 }
 
+/// MemTotal is what is left after firmware and iGPU reservations (a 32 GB
+/// machine reports ~31.3 GiB), so round up to the next common module size.
+fn installed_ram_gb(mem_total_kb: u64) -> u64 {
+    const SIZES: [u64; 12] = [2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128];
+    let gib = mem_total_kb as f64 / (1024.0 * 1024.0);
+    SIZES
+        .iter()
+        .copied()
+        .find(|&s| s as f64 >= gib)
+        .unwrap_or_else(|| (gib / 64.0).ceil() as u64 * 64)
+}
+
 pub fn system_profile() -> SystemProfile {
     let cpu = fs::read_to_string("/proc/cpuinfo")
         .unwrap_or_default()
@@ -428,7 +440,7 @@ pub fn system_profile() -> SystemProfile {
         desktop: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
         session: std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
         cpu,
-        ram_gb: (ram_kb + 512 * 1024) / (1024 * 1024),
+        ram_gb: installed_ram_gb(ram_kb),
         gpus: gpus(),
         proton: proton_in_use(),
         umu,
@@ -1841,6 +1853,15 @@ mod tests {
     fn a_pair_is_left_alone() {
         let out = condense_log("a\nb\nb\nc\n");
         assert_eq!(out, vec!["a", "b", "b", "c"]);
+    }
+
+    #[test]
+    fn ram_rounds_up_to_the_installed_size() {
+        assert_eq!(installed_ram_gb(32_822_000), 32); // 31.3 GiB on a 32 GB box
+        assert_eq!(installed_ram_gb(15_524_700), 16); // 16 GB laptop minus iGPU carve-out
+        assert_eq!(installed_ram_gb(16 * 1024 * 1024), 16);
+        assert_eq!(installed_ram_gb(7_900_000), 8);
+        assert_eq!(installed_ram_gb(200 * 1024 * 1024), 256);
     }
 
     #[test]
