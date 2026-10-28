@@ -164,9 +164,9 @@ gpu_env() {
 		export DXVK_CONFIG="${DXVK_CONFIG:-dxvk.trackPipelineLifetime = True}"
 	fi
 	case $OFFLOAD in
-	off) return ;;
+	off) return 0 ;;
 	on) ;;
-	*) hybrid_nvidia || return ;;
+	*) hybrid_nvidia || return 0 ;;   # a plain return would stop the script under set -e
 	esac
 	export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only
 }

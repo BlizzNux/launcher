@@ -33,6 +33,17 @@ jobs:
             bash -n "$f"
           done
 
+      # Without hybrid NVIDIA graphics gpu_env must return success, or set -e ends the
+      # wrapper silently before Proton starts (Fedora report, issue #27).
+      - name: Wrapper GPU setup on machines without hybrid NVIDIA
+        run: |
+          bash -c 'set -euo pipefail
+            eval "$(sed -n "/^hybrid_nvidia()/,/^}/p;/^gpu_env()/,/^}/p" bin/blizznux-run)"
+            hybrid_nvidia() { return 1; }
+            CACHE_DIR=$(mktemp -d)
+            for OFFLOAD in auto off on; do gpu_env; done
+            echo ok'
+
       - name: Unit tests
         working-directory: src-tauri
         run: cargo test --lib
