@@ -62,7 +62,6 @@ let account = { linked: false, username: "", sharing: false };
 
 async function refreshAccount() {
   try { account = await invoke("account_status"); } catch (e) { console.error(e); return account; }
-  $("#acct-unlinked").classList.toggle("hidden", account.linked);
   $("#acct-linked").classList.toggle("hidden", !account.linked);
   $("#acct-name").textContent = account.username;
   $("#cfg-share").checked = account.sharing;
@@ -259,8 +258,8 @@ async function sendReport() {
       // A link the site had ended is gone by now; the login below links the launcher again.
       await refreshAccount();
       hidePanel();
-      status("Log in on the site below; your report will be sent when you do.");
       startLogin();
+      status("Log in to report.");
     } else if (r.retry) {
       $("#report-status").textContent = `${r.reason} Saved: the launcher tries again each time it starts, for up to a week.`;
     } else {
@@ -594,7 +593,6 @@ async function init() {
   window.__TAURI__.event.listen("launch-progress", (e) => status(String(e.payload)));
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
-  $("#acct-link").onclick = () => { hidePanel(); startLogin(); };
   $("#site").addEventListener("load", onSiteLoaded);
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#cfg-share").addEventListener("change", saveConfig);
