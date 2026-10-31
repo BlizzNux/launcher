@@ -89,8 +89,10 @@ function showSite(url) { ownNavigation = true; $("#site").src = url; }
 
 // Not logged in: the embedded view shows the site's front page, where the site opens its login
 // box once and lets the visitor close it. The launcher pairs itself in the background and
-// collects the token once a login lands; an account stays optional.
-async function startLogin({ navigate = true, delay = 0 } = {}) {
+// collects the token once a login lands; an account stays optional. `ask` is a login the user
+// asked for (Log in and send): the page gets a one-time marker, so the view always loads it
+// afresh and the site opens its login box even if one was closed earlier.
+async function startLogin({ navigate = true, delay = 0, ask = false } = {}) {
   stopPolling();
   try {
     const s = await invoke("link_start");
@@ -99,7 +101,7 @@ async function startLogin({ navigate = true, delay = 0 } = {}) {
       // A page that has only just loaded gets a moment to finish its own requests first: loading
       // the next one on top of it cuts them short, and the site then flashes an error.
       if (delay) await new Promise((done) => setTimeout(done, delay));
-      showSite(s.url);
+      showSite(ask ? `${s.url}${s.url.includes("?") ? "&" : "?"}login=${Date.now()}` : s.url);
     }
     schedulePoll(POLL_FAST_MS);
   } catch (e) {
@@ -258,7 +260,7 @@ async function sendReport() {
       // A link the site had ended is gone by now; the login below links the launcher again.
       await refreshAccount();
       hidePanel();
-      startLogin();
+      startLogin({ ask: true });
       status("Log in to report.");
     } else if (r.retry) {
       $("#report-status").textContent = `${r.reason} Saved: the launcher tries again each time it starts, for up to a week.`;

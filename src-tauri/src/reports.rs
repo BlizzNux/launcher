@@ -63,7 +63,10 @@ pub async fn link_start(app: AppHandle) -> Result<LinkStart, String> {
         return Err("the site returned an invalid pairing".into());
     }
     let expires_in = body["expires_in"].as_u64().unwrap_or(600);
-    set_pair_cookie(&app, Some(pair_id.clone()))?;
+    // The page must not load before the cookie is in place: without it the site sees no pairing
+    // (or the previous one, whose login box was already shown) and stays quiet.
+    let stored = set_pair_cookie(&app, Some(pair_id.clone()))?;
+    let _ = tauri::async_runtime::spawn_blocking(move || stored.recv_timeout(Duration::from_secs(2))).await;
     *PAIRING.lock().map_err(|e| e.to_string())? = Some(Pairing { pair_id, pair_secret, started: Instant::now() });
     // The page gets no pairing parameter and no secret: it learns the pairing only from the
     // cookie above, which exists only in this launcher's own cookie store.
@@ -83,10 +86,13 @@ fn site_host() -> String {
 
 /// Put the pairing id in the launcher's own cookie store for the site (HttpOnly, Secure,
 /// SameSite=None so the embedded site sends it). Only this launcher can set it, so the site
-/// can trust it when a logged-in page asks to approve; a crafted link cannot plant it.
-fn set_pair_cookie(app: &AppHandle, value: Option<String>) -> Result<(), String> {
+/// can trust it when a logged-in page asks to approve; a crafted link cannot plant it. The
+/// cookie store works on its own time: the receiver hears once the change has been made (or
+/// hangs up when it could not be).
+fn set_pair_cookie(app: &AppHandle, value: Option<String>) -> Result<std::sync::mpsc::Receiver<()>, String> {
     let main = app.get_webview_window("main").ok_or("main window missing")?;
     let host = site_host();
+    let (done, stored) = std::sync::mpsc::channel();
     main.with_webview(move |platform| {
         #[cfg(target_os = "linux")]
         {
@@ -99,13 +105,14 @@ fn set_pair_cookie(app: &AppHandle, value: Option<String>) -> Result<(), String>
             cookie.set_http_only(true);
             cookie.set_same_site_policy(soup::SameSitePolicy::None);
             if max_age == 0 {
-                cm.delete_cookie(&mut cookie, None::<&webkit2gtk::gio::Cancellable>, |_| {});
+                cm.delete_cookie(&mut cookie, None::<&webkit2gtk::gio::Cancellable>, move |_| { let _ = done.send(()); });
             } else {
-                cm.add_cookie(&mut cookie, None::<&webkit2gtk::gio::Cancellable>, |_| {});
+                cm.add_cookie(&mut cookie, None::<&webkit2gtk::gio::Cancellable>, move |_| { let _ = done.send(()); });
             }
         }
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    Ok(stored)
 }
 
 #[derive(serde::Serialize)]
