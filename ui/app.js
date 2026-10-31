@@ -125,6 +125,7 @@ async function pollLogin() {
       // The view stays where it is: the login happened on the site's own page, which has just
       // reloaded as logged in. Loading it once more would cut that page's requests short.
       if (r.returning) status(`Logged in as ${r.username}.`); else askSharing(r.username);
+      sendHeld();
     } else if (r.status === "expired" || r.status === "none") {
       pairing = false;   // no new pairing by itself: a login or the Log in button starts the next one
     } else if (r.status === "busy") {
@@ -203,6 +204,25 @@ function askSharing(username) {
 // ---- reports to BlizzNux ----
 let report = { kind: "run", game: null, outcome: null, body: null };
 
+// Every report needs a login. Logged out, Send keeps the report and opens the login instead.
+function showReportLogin() {
+  $("#report-login").classList.toggle("hidden", account.linked);
+  $("#report-send").textContent = account.linked ? "Send to BlizzNux" : "Log in and send";
+}
+
+// Problem answers carry the launcher log, and the site shows it in the game's thread.
+function showReportPublic() {
+  $("#report-public").classList.toggle("hidden", !(report.kind === "run" && ["issues", "broken"].includes(report.outcome)));
+}
+
+// Reports kept until a login go out right after it, without a second preview.
+async function sendHeld() {
+  try {
+    const n = await invoke("flush_reports");
+    if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`);
+  } catch (e) { console.error(e); }
+}
+
 async function openReport(kind, game, intro) {
   report = { kind, game, outcome: null, body: null };
   $("#report-title").textContent = kind === "run" ? `How did ${game?.name || "the game"} run?` : "Report a problem";
@@ -213,6 +233,8 @@ async function openReport(kind, game, intro) {
   $("#report-preview").textContent = "";
   $("#report-status").textContent = "";
   $("#report-send").disabled = kind === "run";
+  showReportLogin();
+  showReportPublic();
   $("#report-comment").placeholder = kind === "run" ? "Anything worth noting? Optional." : "What went wrong? The launcher log is attached automatically.";
   showPanel("report");
   if (kind === "bug") await previewReport();
@@ -233,8 +255,16 @@ async function sendReport() {
     if (r.sent) {
       $("#report-status").textContent = r.url ? "Sent. Thank you." : "Sent.";
       setTimeout(hidePanel, 1500);
-    } else {
+    } else if (r.needs_login) {
+      // A link the site had ended is gone by now; the login below links the launcher again.
+      await refreshAccount();
+      hidePanel();
+      status("Log in on the site below; your report will be sent when you do.");
+      startLogin();
+    } else if (r.retry) {
       $("#report-status").textContent = `${r.reason} Saved: the launcher tries again each time it starts, for up to a week.`;
+    } else {
+      $("#report-status").textContent = `${r.reason} It is kept and sent again by the next launcher version.`;
     }
   } catch (e) { $("#report-status").textContent = String(e); $("#report-send").disabled = false; }
 }
@@ -250,8 +280,9 @@ async function onGameEnded(ev) {
   const g = ev.payload || {};
   const mins = Math.round((g.seconds || 0) / 60);
   const auto = (await invoke("read_config")).REPORTS_AUTO === "1";
-  await openReport("run", { code: g.code, name: g.name }, `${g.name} ran for about ${mins} minute${mins === 1 ? "" : "s"}. Your setup and the game build are attached${auto ? " and will be sent as soon as you pick an answer" : ""}.`);
-  report.auto = auto;
+  const now = auto && account.linked;   // logged out, every answer goes through the login first
+  await openReport("run", { code: g.code, name: g.name }, `${g.name} ran for about ${mins} minute${mins === 1 ? "" : "s"}. Your setup and the game build are attached${now ? " and will be sent as soon as you pick an answer" : ""}.`);
+  report.auto = now;
 }
 
 // ---- WoW addons ----
@@ -549,6 +580,7 @@ async function init() {
   document.querySelectorAll(".outcome").forEach((b) => { b.onclick = async () => {
     document.querySelectorAll(".outcome").forEach((o) => o.classList.toggle("active", o === b));
     report.outcome = b.dataset.outcome;
+    showReportPublic();
     $("#report-send").disabled = false;   // an answer that cannot be previewed can still be saved
     await previewReport();
     if (report.auto) sendReport();
@@ -586,7 +618,8 @@ async function init() {
   if (st.installed && !acct.linked) startLogin(); else { showSite(FORUM); checkLink("start"); }
   checkUpdate(version);
   checkBattlenet();
-  invoke("flush_reports").then((n) => { if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`); }).catch(() => {});
+  if (acct.linked) sendHeld();
+  else invoke("waiting_reports").then((n) => { if (n) status(n === 1 ? "1 report is waiting for you to log in." : `${n} reports are waiting for you to log in.`); }).catch(() => {});
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
   setInterval(() => checkLink("timer"), LINK_CHECK_EVERY_MS);   // a link ended from another browser is noticed without a restart
   watchStaleness();

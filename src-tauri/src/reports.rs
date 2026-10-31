@@ -833,15 +833,35 @@ pub async fn link_check() -> Result<LinkCheck, String> {
     let Ok(resp) = sent else { return Ok(LinkCheck { status: "unknown".into(), username }) };
     let status = check_outcome(resp.status().as_u16());
     if status == "revoked" {
-        let mut c = load_config();
-        if let Some(u) = c.remove("USERNAME") {
-            c.insert("LAST_USERNAME".into(), u);
-        }
-        c.remove("USER_TOKEN");
-        save_config(&c)?;
+        forget_link()?;
         return Ok(LinkCheck { status: status.into(), username: String::new() });
     }
     Ok(LinkCheck { status: status.into(), username })
+}
+
+/// Drop a link the site has ended. The sharing choices stay, so logging in again brings
+/// everything back without a question.
+fn forget_link() -> Result<(), String> {
+    let mut c = load_config();
+    if let Some(u) = c.remove("USERNAME") {
+        c.insert("LAST_USERNAME".into(), u);
+    }
+    c.remove("USER_TOKEN");
+    save_config(&c)
+}
+
+fn user_token() -> String {
+    load_config().get("USER_TOKEN").cloned().unwrap_or_default()
+}
+
+/// Reports about something that went wrong. They carry the end of the launcher log.
+fn is_problem(kind: &str, outcome: Option<&str>) -> bool {
+    match kind {
+        "bug" => true,
+        "launch" => outcome == Some("failed"),
+        "run" => matches!(outcome, Some("issues" | "broken")),
+        _ => false,
+    }
 }
 
 /// True when the user linked an account and opted into community reports.
@@ -1002,7 +1022,7 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
         "schema": 1,
         "type": kind,
         "install_id": install_id(),
-        "user_token": load_config().get("USER_TOKEN").cloned().unwrap_or_default(),
+        "user_token": user_token(),
         "launcher_version": env!("CARGO_PKG_VERSION"),
         "created_at": now_iso(),
         "system": system_profile(),
@@ -1038,6 +1058,9 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
                 "The launcher cannot tell which build of {name} is installed, so the site has nothing to file this report under. Please tell BlizzNux through \"Report a problem\" in Settings."
             )));
         }
+        if is_problem("run", Some(&o)) {
+            body["log"] = serde_json::Value::String(log_tail(200));
+        }
         body["outcome"] = serde_json::Value::String(o);
         body["comment"] = serde_json::Value::String(scrub(&comment.unwrap_or_default()).chars().take(2000).collect());
     } else {
@@ -1049,17 +1072,21 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
     Ok(body)
 }
 
-/// Why a report was not delivered: the site refused this report, or the site could not take
-/// any right now (offline, rate limit, server trouble), which is worth another try later.
+/// Why a report was not delivered: the site refused this report, the site takes reports only
+/// from a logged-in launcher, or the site could not take any right now (offline, rate limit,
+/// server trouble), which is worth another try later.
 enum SendError {
     Refused(String),
+    LoginRequired(String),
     Unreachable(String),
 }
+
+const LOGIN_NEEDED: &str = "Log in to BlizzNux to send reports.";
 
 #[tauri::command]
 pub async fn send_report(report: serde_json::Value) -> Result<String, String> {
     post_report(&report).await.map_err(|e| match e {
-        SendError::Refused(why) | SendError::Unreachable(why) => why,
+        SendError::Refused(why) | SendError::LoginRequired(why) | SendError::Unreachable(why) => why,
     })
 }
 
@@ -1071,20 +1098,24 @@ async fn post_report(report: &serde_json::Value) -> Result<String, SendError> {
         .build()
         .map_err(offline)?;
     let resp = client.post(report_url()).json(report).send().await.map_err(offline)?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if status.as_u16() == 429 {
-        return Err(SendError::Unreachable("The site is not taking more reports right now.".into()));
+    let status = resp.status().as_u16();
+    answer(status, &resp.text().await.unwrap_or_default())
+}
+
+/// What the site's answer to a report means: delivered (with the thread, when there is one),
+/// log in first, try again later, or refused.
+fn answer(status: u16, text: &str) -> Result<String, SendError> {
+    let field = |name: &str| serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v[name].as_str().map(String::from));
+    match status {
+        200..=299 => Ok(field("url").unwrap_or_default()),
+        401 => Err(SendError::LoginRequired(field("error").unwrap_or_else(|| LOGIN_NEEDED.into()))),
+        429 => Err(SendError::Unreachable("The site is not taking more reports right now.".into())),
+        500..=599 => Err(SendError::Unreachable(format!("The site had a problem (HTTP {status})."))),
+        _ => {
+            let msg = field("error").unwrap_or_else(|| text.to_string());
+            Err(SendError::Refused(format!("The site did not accept this report (HTTP {status}: {}).", msg.chars().take(300).collect::<String>())))
+        }
     }
-    if status.is_server_error() {
-        return Err(SendError::Unreachable(format!("The site had a problem (HTTP {}).", status.as_u16())));
-    }
-    if !status.is_success() {
-        let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or(text);
-        return Err(SendError::Refused(format!("The site did not accept the report (HTTP {}: {}).", status.as_u16(), msg.chars().take(300).collect::<String>())));
-    }
-    let url = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["url"].as_str().map(String::from)).unwrap_or_default();
-    Ok(url)
 }
 
 /// A report the user chose to send that has not reached the site yet: their answer, and the
@@ -1101,6 +1132,9 @@ struct Pending {
     report: Option<serde_json::Value>,
     /// The launcher version whose report the site refused; a later version builds it afresh.
     refused_by: Option<String>,
+    /// Kept until the launcher is logged in: the site takes reports only from a logged-in launcher.
+    #[serde(default)]
+    needs_login: bool,
 }
 
 /// How long an undelivered report is kept.
@@ -1129,10 +1163,16 @@ pub struct Submitted {
     pub url: String,
     /// Why the report was kept for later instead.
     pub reason: String,
+    /// Kept until the user logs in; it goes out as soon as they do.
+    pub needs_login: bool,
+    /// Kept to be tried again on later starts (not when the site refused it).
+    pub retry: bool,
 }
 
-/// Send a report the user asked for. One that cannot go out now (site unreachable or refusing,
-/// game build unknown) is kept in the outbox and tried again on later starts.
+/// Send a report the user asked for. Every report needs a logged-in launcher: without one the
+/// report is kept and goes out once the user logs in. One that cannot go out now for another
+/// reason (site unreachable or refusing, game build unknown) is kept in the outbox and tried
+/// again on later starts.
 #[tauri::command]
 pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<Submitted, String> {
     let mut pending = Pending {
@@ -1144,60 +1184,114 @@ pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<S
         build: String::new(),
         report: None,
         refused_by: None,
+        needs_login: false,
     };
+    let linked = !user_token().is_empty();
     let reason = match build(kind, game, outcome, comment) {
-        Ok(mut body) => match post_report(&body).await {
-            Ok(url) => return Ok(Submitted { sent: true, url, reason: String::new() }),
-            Err(e) => {
-                pending.build = body["game"]["version"].as_str().unwrap_or_default().to_string();
-                match e {
-                    SendError::Unreachable(why) => {
-                        if let Some(fields) = body.as_object_mut() {
-                            fields.remove("user_token");
-                        }
-                        pending.report = Some(body);
-                        why
+        Ok(body) => {
+            // Without a login the site can only answer "log in first": skip that round trip.
+            let sent = if linked { post_report(&body).await } else { Err(SendError::LoginRequired(LOGIN_NEEDED.into())) };
+            let e = match sent {
+                Ok(url) => return Ok(Submitted { sent: true, url, reason: String::new(), needs_login: false, retry: false }),
+                Err(e) => e,
+            };
+            pending.build = body["game"]["version"].as_str().unwrap_or_default().to_string();
+            match e {
+                SendError::LoginRequired(why) => {
+                    // A launcher that thought it was logged in holds a link the site has ended.
+                    if linked {
+                        forget_link()?;
                     }
-                    // A refused answer waits for a launcher whose report the site takes; a
-                    // refused bug report would carry another log by then.
-                    SendError::Refused(why) if pending.kind == "run" => {
-                        pending.refused_by = Some(env!("CARGO_PKG_VERSION").into());
-                        why
-                    }
-                    SendError::Refused(why) => return Err(why),
+                    pending.needs_login = true;
+                    pending.report = Some(without_token(body));
+                    why
                 }
+                SendError::Unreachable(why) => {
+                    pending.report = Some(without_token(body));
+                    why
+                }
+                // A refused answer waits for a launcher whose report the site takes; a refused
+                // bug report would carry another log by then.
+                SendError::Refused(why) if pending.kind == "run" => {
+                    pending.refused_by = Some(env!("CARGO_PKG_VERSION").into());
+                    why
+                }
+                SendError::Refused(why) => return Err(why),
             }
-        },
+        }
+        // Kept and built again on later starts; like every saved report it waits for a login.
         Err(BuildError::UnknownBuild(why)) => why,
         Err(BuildError::Invalid(why)) => return Err(why),
     };
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     save_pending(&outbox_dir().join(format!("{nanos}.json")), &pending)?;
-    Ok(Submitted { sent: false, url: String::new(), reason })
+    Ok(Submitted { sent: false, url: String::new(), reason, needs_login: pending.needs_login, retry: pending.refused_by.is_none() })
 }
 
-/// Try the outbox again (the UI asks once per start); returns how many reports got through.
-#[tauri::command]
-pub async fn flush_reports() -> usize {
+/// A report as kept on disk: the account token is added again when it is sent.
+fn without_token(mut body: serde_json::Value) -> serde_json::Value {
+    if let Some(fields) = body.as_object_mut() {
+        fields.remove("user_token");
+    }
+    body
+}
+
+/// What a start, or a fresh login, does with a saved report.
+#[derive(Debug, PartialEq)]
+enum Held {
+    Expired,
+    Wait,
+    Send,
+}
+
+/// Every report needs a login, so nothing goes out while the launcher is logged out; a report
+/// the site refused waits for the next launcher version.
+fn held(pending: &Pending, linked: bool, now: u64) -> Held {
+    if now.saturating_sub(pending.saved_at) > PENDING_SECS {
+        Held::Expired
+    } else if !linked || pending.refused_by.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+        Held::Wait
+    } else {
+        Held::Send
+    }
+}
+
+fn outbox() -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(outbox_dir())
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |x| x == "json")).collect())
         .unwrap_or_default();
     files.sort();
+    files
+}
+
+/// How many saved reports wait for the user to log in.
+#[tauri::command]
+pub fn waiting_reports() -> usize {
+    outbox()
+        .iter()
+        .filter_map(|p| fs::read(p).ok().and_then(|b| serde_json::from_slice::<Pending>(&b).ok()))
+        .filter(|p| p.needs_login && held(p, false, now_secs()) != Held::Expired)
+        .count()
+}
+
+/// Try the outbox again (the UI asks once per start and once after a login); returns how many
+/// reports got through.
+#[tauri::command]
+pub async fn flush_reports() -> usize {
+    let linked = !user_token().is_empty();
     let mut sent = 0;
-    for path in files {
+    for path in outbox() {
         let discard = || { let _ = fs::remove_file(&path); };
         let Some(mut pending) = fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Pending>(&b).ok()) else { discard(); continue };
-        if now_secs().saturating_sub(pending.saved_at) > PENDING_SECS {
-            discard();
-            continue;
+        match held(&pending, linked, now_secs()) {
+            Held::Expired => { discard(); continue }
+            Held::Wait => continue,
+            Held::Send => {}
         }
-        if pending.refused_by.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
-            continue;
-        }
-        let body = match pending.report.take() {
+        let body = match pending.report.clone() {
             Some(mut body) => {
                 let Some(fields) = body.as_object_mut() else { discard(); continue };
-                fields.insert("user_token".into(), load_config().get("USER_TOKEN").cloned().unwrap_or_default().into());
+                fields.insert("user_token".into(), user_token().into());
                 body
             }
             None => match build(pending.kind.clone(), pending.game.clone(), pending.outcome.clone(), pending.comment.clone()) {
@@ -1217,6 +1311,15 @@ pub async fn flush_reports() -> usize {
                 sent += 1;
             }
             Err(SendError::Unreachable(_)) => break,
+            // The site has ended this link: keep the report for the next login and stop, the
+            // rest would get the same answer. No retry until then, so this never loops.
+            Err(SendError::LoginRequired(why)) => {
+                eprintln!("[report] saved {} report needs a login: {why}", pending.kind);
+                pending.needs_login = true;
+                let _ = save_pending(&path, &pending);
+                let _ = forget_link();
+                break;
+            }
             Err(SendError::Refused(why)) => {
                 eprintln!("[report] saved {} report refused: {why}", pending.kind);
                 if pending.kind == "run" {
@@ -1767,6 +1870,66 @@ mod tests {
         assert_eq!(split_game("Pro"), ("Pro", ""));
         assert_eq!(game_id("WoW", "_classic_era_"), "WoW/_classic_era_");
         assert_eq!(game_id("WTCG", ""), "WTCG");
+    }
+
+    #[test]
+    fn problem_reports_are_the_ones_that_carry_the_log() {
+        assert!(is_problem("bug", None));
+        assert!(is_problem("launch", Some("failed")));
+        assert!(!is_problem("launch", Some("ok")));
+        assert!(is_problem("run", Some("issues")));
+        assert!(is_problem("run", Some("broken")));
+        assert!(!is_problem("run", Some("perfect")));
+        assert!(!is_problem("run", Some("ok")));
+        assert!(!is_problem("run", None));
+    }
+
+    #[test]
+    fn the_sites_answer_to_a_report_is_read_by_its_status() {
+        assert!(matches!(answer(201, r#"{"url":"https://blizznux.com/d/1"}"#), Ok(u) if u == "https://blizznux.com/d/1"));
+        assert!(matches!(answer(202, r#"{"status":"not tracked"}"#), Ok(u) if u.is_empty()));
+        assert!(matches!(answer(401, r#"{"error":"Log in to BlizzNux to send reports","code":"login_required"}"#), Err(SendError::LoginRequired(w)) if w == "Log in to BlizzNux to send reports"));
+        assert!(matches!(answer(401, ""), Err(SendError::LoginRequired(w)) if w == LOGIN_NEEDED));
+        assert!(matches!(answer(400, r#"{"error":"bad body"}"#), Err(SendError::Refused(w)) if w.contains("bad body") && w.contains("did not accept")));
+        assert!(matches!(answer(429, ""), Err(SendError::Unreachable(_))));
+        assert!(matches!(answer(503, ""), Err(SendError::Unreachable(_))));
+    }
+
+    fn saved(saved_at: u64, refused_by: Option<&str>, needs_login: bool) -> Pending {
+        Pending {
+            kind: "run".into(),
+            game: Some("WoW".into()),
+            outcome: Some("perfect".into()),
+            comment: None,
+            saved_at,
+            build: String::new(),
+            report: None,
+            refused_by: refused_by.map(String::from),
+            needs_login,
+        }
+    }
+
+    #[test]
+    fn a_saved_report_waits_for_a_login_and_is_never_retried_in_a_loop() {
+        let now = 10 * PENDING_SECS;
+        // Logged out: everything waits, nothing is sent and nothing is marked refused.
+        assert_eq!(held(&saved(now, None, true), false, now), Held::Wait);
+        assert_eq!(held(&saved(now, None, false), false, now), Held::Wait);
+        // Once logged in it goes out.
+        assert_eq!(held(&saved(now, None, true), true, now), Held::Send);
+        // A report the site refused waits for the next launcher version.
+        assert_eq!(held(&saved(now, Some(env!("CARGO_PKG_VERSION")), false), true, now), Held::Wait);
+        assert_eq!(held(&saved(now, Some("0.0.1"), false), true, now), Held::Send);
+        // A week later it is gone, logged in or not.
+        assert_eq!(held(&saved(now - PENDING_SECS - 1, None, true), false, now), Held::Expired);
+        assert_eq!(held(&saved(now - PENDING_SECS - 1, None, true), true, now), Held::Expired);
+    }
+
+    #[test]
+    fn a_report_saved_by_an_older_launcher_reads_as_not_waiting_for_a_login() {
+        let old = r#"{"kind":"run","game":"WoW","outcome":"perfect","comment":null,"saved_at":1,"build":"","report":null,"refused_by":null}"#;
+        let p: Pending = serde_json::from_str(old).unwrap();
+        assert!(!p.needs_login);
     }
 
     #[test]

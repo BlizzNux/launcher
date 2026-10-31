@@ -790,6 +790,7 @@ pub fn run() {
             reports::send_report,
             reports::submit_report,
             reports::flush_reports,
+            reports::waiting_reports,
             reports::account_status,
             reports::session_state,
             reports::link_start,
