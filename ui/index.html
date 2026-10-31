@@ -72,13 +72,8 @@
       </div>
       <pre id="diag" class="diag"></pre>
 
-      <h2>BlizzNux account</h2>
-      <div id="acct-unlinked">
-        <p class="muted">The launcher works without an account. Log in with blizznux.com to share compatibility
-          reports with the community: launches, game sessions and anything that breaks are then recorded under your account.</p>
-        <div class="row"><button id="acct-link">Log in with BlizzNux.com</button></div>
-      </div>
       <div id="acct-linked" class="hidden">
+        <h2>BlizzNux account</h2>
         <p>Logged in as <strong id="acct-name"></strong>. To log out, use the menu on BlizzNux.com above; that logs the launcher out as well.</p>
         <label class="radio"><input type="checkbox" id="cfg-share"> Share verification reports (launches and game sessions, with your setup)</label>
         <label class="radio"><input type="checkbox" id="cfg-bug-auto"> Send bug reports automatically when a launch fails</label>
@@ -96,6 +91,8 @@
         <button class="outcome" data-outcome="broken">Broken</button>
       </div>
       <textarea id="report-comment" rows="3" placeholder="Anything worth noting? Optional."></textarea>
+      <p id="report-public" class="muted hidden">Your launcher log is attached and will be posted publicly with this report. Home paths are replaced with ~.</p>
+      <p id="report-login" class="muted hidden">Log in to BlizzNux to send reports. What you wrote is kept and sent as soon as you log in.</p>
       <details id="report-preview-wrap"><summary class="muted">What will be sent</summary><pre id="report-preview" class="diag"></pre></details>
       <div class="row">
         <button id="report-send" class="launch" disabled>Send to BlizzNux</button>
