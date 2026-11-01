@@ -5,3 +5,4 @@ src-tauri/gen/
 .cache/
 flatpak/.build/
 flatpak/.flatpak-builder/
+.release-build/

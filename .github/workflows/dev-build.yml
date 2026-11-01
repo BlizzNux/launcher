@@ -31,7 +31,8 @@ env:
 
 jobs:
   build:
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    # release-v* branches are the version bumps of scripts/release.sh; they make no dev build.
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.event.pull_request.head.ref, 'release-v')
     # The same base the release bundles are built on (scripts/build-env/Dockerfile).
     runs-on: ubuntu-22.04
     steps:
@@ -143,7 +144,7 @@ jobs:
           fi
 
   cleanup:
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.event.pull_request.head.ref, 'release-v')
     runs-on: ubuntu-22.04
     steps:
       - name: Delete the pre-release and its tag
