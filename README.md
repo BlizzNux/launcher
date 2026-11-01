@@ -41,17 +41,17 @@ Linux. The full list is on the [BlizzNux wiki](https://blizznux.com/wiki).
 Every pull request in this repository gets a test build, published as a GitHub pre-release
 named `dev-pr<number>` (the pull request has a comment with the link). It is rebuilt on each
 push and deleted when the pull request closes. It is not signed, and the launcher's updater
-never offers it. Download the AppImage with:
+never offers it.
+
+Download the AppImage from
+`https://github.com/BlizzNux/launcher/releases/download/dev-pr<number>/BlizzNux-dev-pr<number>.AppImage`
+(for example [pull request 32](https://github.com/BlizzNux/launcher/releases/download/dev-pr32/BlizzNux-dev-pr32.AppImage)),
+then right-click → Properties → Permissions → Is executable, and double-click it.
+
+From a terminal:
 
 ```
 gh release download dev-pr32 -R BlizzNux/launcher -p '*.AppImage'
-```
-
-Or replace the binary and wrapper in `~/.local/bin` (back up the current ones first, for
-example `cp ~/.local/bin/blizznux ~/.local/bin/blizznux.bak`):
-
-```
-gh release download dev-pr32 -R BlizzNux/launcher -p blizznux -p blizznux-run -D /tmp/bz && install -m755 /tmp/bz/blizznux /tmp/bz/blizznux-run ~/.local/bin/
 ```
 
 ## Need help?

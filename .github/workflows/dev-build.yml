@@ -83,7 +83,9 @@ jobs:
           out=dist-dev
           b=src-tauri/target/container/release
           mkdir "$out"
-          cp "$b"/bundle/appimage/*.AppImage "$b"/bundle/deb/*.deb "$b"/bundle/rpm/*.rpm "$out"/
+          # The AppImage gets a stable, URL-safe name (no version, no "+") so the download link never changes.
+          cp "$b"/bundle/appimage/*.AppImage "$out/BlizzNux-dev-pr${PR}.AppImage"
+          cp "$b"/bundle/deb/*.deb "$b"/bundle/rpm/*.rpm "$out"/
           # The launcher binary and its wrapper, for a machine that runs them from ~/.local/bin.
           cp "$b/blizznux" "$out/blizznux"
           cp bin/blizznux-run "$out/blizznux-run"
@@ -99,26 +101,19 @@ jobs:
           tag="dev-pr$PR"
           short=${SHA:0:7}
           url="https://github.com/$REPO/pull/$PR"
+          link="https://github.com/$REPO/releases/download/$tag/BlizzNux-dev-pr$PR.AppImage"
           {
+            echo "**[Download the AppImage]($link)**"
+            echo
+            echo "After downloading: right-click → Properties → Permissions → Is executable, then double-click."
+            echo
             echo "**$TITLE**"
             echo
-            echo "Pull request: $url"
-            echo "Commit: $SHA"
             echo "Version: $VERSION"
+            echo "Commit: $SHA"
+            echo "Pull request: $url"
             echo
             echo "Test build, not a release. The launcher's updater ignores it."
-            echo
-            echo "Download the AppImage:"
-            echo
-            echo '```'
-            echo "gh release download $tag -R $REPO -p '*.AppImage'"
-            echo '```'
-            echo
-            echo "Or the binary and its wrapper, to run from ~/.local/bin:"
-            echo
-            echo '```'
-            echo "gh release download $tag -R $REPO -p blizznux -p blizznux-run -D /tmp/bz && install -m755 /tmp/bz/blizznux /tmp/bz/blizznux-run ~/.local/bin/"
-            echo '```'
           } > notes.md
           gh release delete "$tag" -R "$REPO" --cleanup-tag -y 2>/dev/null || true
           gh release create "$tag" -R "$REPO" --prerelease --latest=false --target "$SHA" \
@@ -133,13 +128,11 @@ jobs:
           tag="dev-pr$PR"
           {
             echo '<!-- dev-build -->'
-            echo "Dev build for \`${SHA:0:7}\` (version $VERSION): https://github.com/$REPO/releases/tag/$tag"
+            echo "**[Download the AppImage](https://github.com/$REPO/releases/download/$tag/BlizzNux-dev-pr$PR.AppImage)**"
             echo
-            echo "Test build, not a release; the launcher's updater ignores it. To try the AppImage:"
+            echo "After downloading: right-click → Properties → Permissions → Is executable, then double-click."
             echo
-            echo '```'
-            echo "gh release download $tag -R $REPO -p '*.AppImage'"
-            echo '```'
+            echo "Version $VERSION, commit \`${SHA:0:7}\`. [All files](https://github.com/$REPO/releases/tag/$tag). Test build, not a release; the launcher's updater ignores it."
           } > comment.md
           id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
             --jq '[.[] | select(.body | contains("<!-- dev-build -->"))][0].id // empty' | head -n1)
