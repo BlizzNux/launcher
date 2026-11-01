@@ -54,6 +54,25 @@ From a terminal:
 gh release download dev-pr32 -R BlizzNux/launcher -p '*.AppImage'
 ```
 
+## Releases
+
+A stable release is cut automatically every Sunday by a job on the maintainer's server, and
+can be run by hand with `scripts/release.sh`. If no file that ends up in the bundles changed
+since the last `v*` tag (`src-tauri/`, `ui/`, `bin/`, `package.json`, `package-lock.json`), it
+does nothing. Otherwise it opens a `release-v<version>` pull request with the version bump
+(the next patch version), waits for its checks, squash-merges it, builds the signed AppImage,
+deb and rpm plus `latest.json` in the build container, and publishes the release on the merged
+commit. The notes list the pull requests merged since the last tag.
+
+```
+scripts/release.sh --dry-run            # version, notes and a full signed build; publishes nothing
+scripts/release.sh [version] [notes-file]
+```
+
+The updater signing key never leaves the maintainer's machine. From inside a container the
+script translates bind-mount paths for the Docker host automatically
+(`BLIZZNUX_HOST_PATH_MAP=<path here>=<path on host>` overrides it).
+
 ## Need help?
 
 Ask on the [BlizzNux forum](https://blizznux.com) or
