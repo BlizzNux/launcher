@@ -1,0 +1,159 @@
+name: Dev build
+
+# Every pull request gets a downloadable test build as a GitHub pre-release named
+# dev-pr<number>, so a change can be tried on a real machine before it is merged. The
+# release is replaced on every push and removed when the pull request closes.
+#
+# It is never a real release: it is marked pre-release, never "latest", carries no
+# latest.json and is not signed. The launcher's updater only reads
+# releases/latest/download/latest.json, which cannot resolve to a pre-release, and the
+# site's release announcer skips pre-releases.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+# One build per pull request; a new push (or the close) replaces a build still running.
+concurrency:
+  group: dev-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Needed to create and delete the release and to write the comment. Both jobs only run
+# for branches of this repository, so a fork's code never gets this token.
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  PR: ${{ github.event.pull_request.number }}
+  REPO: ${{ github.repository }}
+
+jobs:
+  build:
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    # The same base the release bundles are built on (scripts/build-env/Dockerfile).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # The current version plus build metadata naming the pull request and the run, for
+      # example 0.2.39+dev.pr32.5. The marker could not be a "-" pre-release such as
+      # 0.2.40-dev.pr32.5: the rpm bundler refuses a "-" in its Version field. A "+" is
+      # accepted by deb, rpm and the AppImage. deb and rpm order it above 0.2.39 and below
+      # the next real release (0.2.40), so installing it over the stable package is an
+      # upgrade and the real release later replaces it. The in-app updater (semver)
+      # ignores build metadata, so it sees 0.2.39: no downgrade is offered, and 0.2.40
+      # still counts as an update.
+      - name: Work out the dev version
+        id: ver
+        run: |
+          base=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          echo "version=${base%%[-+]*}+dev.pr${PR}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      # The container's cargo downloads and compiled crates, as scripts/container-build.sh
+      # mounts them. Cargo.lock decides the key; the restore key lets a changed lock file
+      # start from the last cache and only rebuild what changed.
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/blizznux-build
+            src-tauri/target/container
+          key: dev-build-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: dev-build-
+
+      # No signing key here: the AppImage is not signed and no updater files are made.
+      # The version is only overridden on the command line; tauri.conf.json is not edited.
+      # The cache also holds the bundles of earlier runs; clear them so only this build's are collected.
+      - name: Build the bundles
+        run: |
+          rm -rf src-tauri/target/container/release/bundle
+          scripts/container-build.sh --config '{"version":"${{ steps.ver.outputs.version }}","bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Collect the files
+        run: |
+          out=dist-dev
+          b=src-tauri/target/container/release
+          mkdir "$out"
+          # The AppImage gets a stable, URL-safe name (no version, no "+") so the download link never changes.
+          cp "$b"/bundle/appimage/*.AppImage "$out/BlizzNux-dev-pr${PR}.AppImage"
+          cp "$b"/bundle/deb/*.deb "$b"/bundle/rpm/*.rpm "$out"/
+          # The launcher binary and its wrapper, for a machine that runs them from ~/.local/bin.
+          cp "$b/blizznux" "$out/blizznux"
+          cp bin/blizznux-run "$out/blizznux-run"
+          ls -l "$out"
+
+      # Replace the release of the last push. Deleting the tag as well lets the new one point at this commit.
+      - name: Publish the pre-release
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TITLE: ${{ github.event.pull_request.title }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tag="dev-pr$PR"
+          short=${SHA:0:7}
+          url="https://github.com/$REPO/pull/$PR"
+          link="https://github.com/$REPO/releases/download/$tag/BlizzNux-dev-pr$PR.AppImage"
+          {
+            echo "**[Download the AppImage]($link)**"
+            echo
+            echo "After downloading: right-click → Properties → Permissions → Is executable, then double-click."
+            echo
+            echo "**$TITLE**"
+            echo
+            echo "Version: $VERSION"
+            echo "Commit: $SHA"
+            echo "Pull request: $url"
+            echo
+            echo "Test build, not a release. The launcher's updater ignores it."
+          } > notes.md
+          gh release delete "$tag" -R "$REPO" --cleanup-tag -y 2>/dev/null || true
+          gh release create "$tag" -R "$REPO" --prerelease --latest=false --target "$SHA" \
+            --title "Dev build: PR #$PR ($short)" --notes-file notes.md dist-dev/*
+
+      # One comment per pull request, found by its hidden marker and rewritten on each push.
+      - name: Comment on the pull request
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tag="dev-pr$PR"
+          {
+            echo '<!-- dev-build -->'
+            echo "**[Download the AppImage](https://github.com/$REPO/releases/download/$tag/BlizzNux-dev-pr$PR.AppImage)**"
+            echo
+            echo "After downloading: right-click → Properties → Permissions → Is executable, then double-click."
+            echo
+            echo "Version $VERSION, commit \`${SHA:0:7}\`. [All files](https://github.com/$REPO/releases/tag/$tag). Test build, not a release; the launcher's updater ignores it."
+          } > comment.md
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.body | contains("<!-- dev-build -->"))][0].id // empty' | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@comment.md >/dev/null
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null
+          fi
+
+  cleanup:
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Delete the pre-release and its tag
+        run: gh release delete "dev-pr$PR" -R "$REPO" --cleanup-tag -y || true
+
+      - name: Mark the comment as removed
+        run: |
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.body | contains("<!-- dev-build -->"))][0].id // empty' | head -n1)
+          if [ -n "$id" ]; then
+            printf '<!-- dev-build -->\nThe dev build for this pull request was removed.\n' > comment.md
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@comment.md >/dev/null
+          fi

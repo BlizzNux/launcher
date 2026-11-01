@@ -36,6 +36,24 @@ double-click it.
 The games made by Blizzard run. Call of Duty does not, because its anti-cheat does not allow
 Linux. The full list is on the [BlizzNux wiki](https://blizznux.com/wiki).
 
+## Testing a pull request
+
+Every pull request in this repository gets a test build, published as a GitHub pre-release
+named `dev-pr<number>` (the pull request has a comment with the link). It is rebuilt on each
+push and deleted when the pull request closes. It is not signed, and the launcher's updater
+never offers it.
+
+Download the AppImage from
+`https://github.com/BlizzNux/launcher/releases/download/dev-pr<number>/BlizzNux-dev-pr<number>.AppImage`
+(for example [pull request 32](https://github.com/BlizzNux/launcher/releases/download/dev-pr32/BlizzNux-dev-pr32.AppImage)),
+then right-click → Properties → Permissions → Is executable, and double-click it.
+
+From a terminal:
+
+```
+gh release download dev-pr32 -R BlizzNux/launcher -p '*.AppImage'
+```
+
 ## Need help?
 
 Ask on the [BlizzNux forum](https://blizznux.com) or
