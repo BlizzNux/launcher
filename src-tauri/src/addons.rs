@@ -23,6 +23,7 @@ fn flavor_label(folder: &str) -> String {
         "_classic_era_" => "Classic Era".into(),
         "_classic_era_ptr_" => "Classic Era PTR".into(),
         "_anniversary_" => "Anniversary".into(),
+        "_forever_" => "Forever".into(),
         other => {
             // Unknown future client: make a readable label from the folder name.
             let name = other.trim_matches('_').replace('_', " ");
@@ -33,7 +34,14 @@ fn flavor_label(folder: &str) -> String {
 }
 
 /// Which family of addon builds an install wants: "retail", "classic" (progression) or "era".
+///
+/// WoW Forever (`_forever_`, client 1.60) runs `Wow.exe`, not `WowClassic.exe`, so it is
+/// matched by folder before the exe check. It is the vanilla game, so it takes Era builds
+/// until addon authors publish Forever-specific ones.
 fn flavor_family(folder: &str, exe: &str) -> &'static str {
+    if folder == "_forever_" {
+        return "era";
+    }
     if !exe.starts_with("WowClassic") {
         return "retail";
     }
@@ -406,6 +414,20 @@ mod tests {
         assert_eq!(pick_asset_for_flavor(&assets, "_retail_"), Some("https://x/Addon-1.0.zip"));
         assert_eq!(pick_asset_for_flavor(&assets, "_classic_era_"), Some("https://x/Addon-1.0-classic.zip"));
         assert_eq!(pick_asset_for_flavor(&assets, "_classic_"), Some("https://x/Addon-1.0-mists.zip"));
+        assert_eq!(pick_asset_for_flavor(&assets, "_forever_"), Some("https://x/Addon-1.0-classic.zip"));
+    }
+
+    #[test]
+    fn wow_forever_is_treated_as_era_everywhere() {
+        // Forever runs Wow.exe, so the exe alone would say retail.
+        assert_eq!(flavor_family("_forever_", "Wow.exe"), "era");
+        assert_eq!(super::wowup_client_type("_forever_", "Wow.exe"), 6);
+        assert_eq!(flavor_label("_forever_"), "Forever");
+        // Unchanged neighbors.
+        assert_eq!(flavor_family("_retail_", "Wow.exe"), "retail");
+        assert_eq!(flavor_family("_classic_era_", "WowClassic.exe"), "era");
+        assert_eq!(super::wowup_client_type("_retail_", "Wow.exe"), 0);
+        assert_eq!(super::wowup_client_type("_anniversary_", "WowClassic.exe"), 9);
     }
 }
 
@@ -513,7 +535,14 @@ pub async fn wowup_install() -> Result<String, String> {
 /// WowUp's WowClientType for an install, mirroring WowUp's own getClientType():
 /// Retail 0, Classic 1, RetailPtr 2, ClassicPtr 3, Beta 4, ClassicBeta 5, ClassicEra 6,
 /// ClassicEraPtr 7, RetailXPtr 8, Anniversary 9.
+///
+/// WowUp has no Forever type yet. Forever (`_forever_`) is the vanilla game on a 1.x
+/// client, so it is registered as ClassicEra (6), the closest match, even though it runs
+/// `Wow.exe`; as Retail (0) WowUp would offer it retail addons that do not load.
 fn wowup_client_type(folder: &str, exe: &str) -> u32 {
+    if folder == "_forever_" {
+        return 6;
+    }
     match exe {
         "Wow.exe" => 0,
         "WowClassic.exe" => match folder { "_classic_era_" => 6, "_anniversary_" => 9, _ => 1 },
