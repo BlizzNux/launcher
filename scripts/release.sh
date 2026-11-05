@@ -41,7 +41,8 @@ notes_abs=${notes:+$(realpath "$notes")}
 # 1. what is on main, and what the last release was
 git fetch -q origin main --tags
 base=$(git rev-parse origin/main)
-last=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+# sed, not head: head exits after one line, and under pipefail git's SIGPIPE fails the run (exit 141).
+last=$(git tag --list 'v*' --sort=-v:refname | sed -n 1p)
 [[ -n $last ]] || { echo "no v* tag found" >&2; exit 1; }
 git merge-base --is-ancestor "$last" "$base" || { echo "$last is not an ancestor of origin/main" >&2; exit 1; }
 
