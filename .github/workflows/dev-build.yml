@@ -54,16 +54,16 @@ jobs:
           base=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
           echo "version=${base%%[-+]*}+dev.pr${PR}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
 
       - run: npm ci
 
       # The container's cargo downloads and compiled crates, as scripts/container-build.sh
       # mounts them. Cargo.lock decides the key; the restore key lets a changed lock file
       # start from the last cache and only rebuild what changed.
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cache/blizznux-build
