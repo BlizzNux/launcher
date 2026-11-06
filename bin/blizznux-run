@@ -150,6 +150,33 @@ hybrid_nvidia() {
 	(( $(ls /dev/dri/ 2>/dev/null | grep -c '^card') >= 2 ))
 }
 
+# The chip that drives the screen on a hybrid NVIDIA laptop, as a DXVK device-name filter ("AMD"
+# or "Intel"). Prints nothing unless the machine is clearly that: exactly two GPUs, one NVIDIA and
+# one AMD or Intel that the firmware started the display on (boot_vga), with a Vulkan driver
+# installed for it. Anything else, or anything unreadable, prints nothing.
+hybrid_display_gpu() {
+	local drm=${BLIZZNUX_DRM_DIR:-/sys/class/drm} card vendor gpus=0 nvidia=0 display="" name icd f
+	for card in "$drm"/card*; do
+		[[ $card =~ /card[0-9]+$ && -r $card/device/vendor ]] || continue
+		gpus=$((gpus + 1))
+		vendor=$(cat "$card/device/vendor" 2>/dev/null) || return 0
+		case $vendor in
+		0x10de) nvidia=$((nvidia + 1)) ;;
+		0x1002 | 0x8086) [[ $(cat "$card/device/boot_vga" 2>/dev/null) == 1 ]] && display=$vendor ;;
+		esac
+	done
+	((gpus == 2 && nvidia == 1)) || return 0
+	case $display in
+	0x1002) name=AMD icd=radeon ;;
+	0x8086) name=Intel icd=intel ;;
+	*) return 0 ;;
+	esac
+	for f in ${BLIZZNUX_ICD_DIRS:-/usr/share/vulkan/icd.d /etc/vulkan/icd.d /usr/local/share/vulkan/icd.d /usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d}; do
+		compgen -G "$f/${icd}_icd*.json" >/dev/null && { echo "$name"; return 0; }
+	done
+	return 0
+}
+
 gpu_env() {
 	# The NVIDIA driver stops storing shaders once its shared cache reaches the size limit, and a large
 	# game then compiles the rest again at every start. The launcher keeps its own cache with a 10 GB
@@ -168,7 +195,24 @@ gpu_env() {
 	on) ;;
 	*) hybrid_nvidia || return 0 ;;   # a plain return would stop the script under set -e
 	esac
-	export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only
+	export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia
+	# Under Hyprland, Battle.net's window could stay white: its UI (Chromium, drawn through DXVK)
+	# rendered on the NVIDIA chip and failed to hand frames to the screen on the other chip. There
+	# Battle.net.exe draws on the display chip, and games are kept on NVIDIA through DXVK and
+	# vkd3d's own device filters instead of hiding the display chip from every program. Only when
+	# the launcher set DXVK_CONFIG itself and the hardware is clearly a two-GPU laptop; everyone
+	# else keeps NVIDIA_only, as before.
+	local display=""
+	if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} && ${DXVK_CONFIG:-} == "dxvk.trackPipelineLifetime = True" ]]; then
+		display=$(hybrid_display_gpu)
+	fi
+	if [[ -n $display ]]; then
+		export DXVK_CONFIG="$DXVK_CONFIG; dxvk.deviceFilter = NVIDIA; [Battle.net.exe]; dxvk.deviceFilter = $display"
+		export VKD3D_FILTER_DEVICE_NAME=${VKD3D_FILTER_DEVICE_NAME:-NVIDIA}
+		log "hybrid GPU under Hyprland: Battle.net's window draws on the $display chip, games on NVIDIA"
+	else
+		export __VK_LAYER_NV_optimus=NVIDIA_only
+	fi
 }
 
 ensure_prefix() {
