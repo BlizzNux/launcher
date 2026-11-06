@@ -429,6 +429,23 @@ mod tests {
         assert_eq!(super::wowup_client_type("_retail_", "Wow.exe"), 0);
         assert_eq!(super::wowup_client_type("_anniversary_", "WowClassic.exe"), 9);
     }
+
+    #[test]
+    fn wowup_entries_are_labeled_by_version_and_old_ones_relabeled() {
+        let mut list = vec![
+            serde_json::json!({"id": "blizznux-retail", "label": "BlizzNux", "location": "/w/_retail_/Wow.exe"}),
+            serde_json::json!({"id": "mine", "label": "BlizzNux", "location": "/w/_ptr_/WowT.exe"}),
+        ];
+        assert!(!super::merge_wowup_install(&mut list, "_retail_", "Wow.exe", "Retail", "/w/_retail_/Wow.exe"));
+        assert!(!super::merge_wowup_install(&mut list, "_ptr_", "WowT.exe", "Retail PTR", "/w/_ptr_/WowT.exe"));
+        assert!(super::merge_wowup_install(&mut list, "_forever_", "Wow.exe", "Forever", "/w/_forever_/Wow.exe"));
+        assert_eq!(list[0]["label"], "Retail");
+        assert_eq!(list[1]["label"], "BlizzNux", "entries the user made stay as they are");
+        assert_eq!(list[2]["label"], "Forever");
+        assert_eq!(list[2]["clientType"], 6);
+        assert_eq!(list[2]["selected"], false);
+        assert_eq!(list.len(), 3);
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -565,6 +582,32 @@ pub(crate) fn wowup_config_dir() -> PathBuf {
     base.join(WOWUP_CONFIG_DIRS[0])
 }
 
+/// Add one install to WowUp's `wow_installations` list, or fix the label of the entry we
+/// added before. WowUp's install picker shows `label`, so it must name the game version:
+/// launchers up to 0.2.40 wrote "BlizzNux" for every install, which made them all look
+/// the same. Entries the user added in WowUp are never touched. Returns true when added.
+fn merge_wowup_install(list: &mut Vec<serde_json::Value>, flavor: &str, exe: &str, label: &str, location: &str) -> bool {
+    let id = format!("blizznux-{}", flavor.trim_matches('_'));
+    if let Some(entry) = list.iter_mut().find(|i| i["location"].as_str() == Some(location)) {
+        if entry["id"].as_str() == Some(id.as_str()) && entry["label"].as_str() == Some("BlizzNux") {
+            entry["label"] = serde_json::json!(label);
+        }
+        return false;
+    }
+    let selected = list.is_empty();
+    list.push(serde_json::json!({
+        "id": id,
+        "clientType": wowup_client_type(flavor, exe),
+        "defaultAddonChannelType": 0,
+        "defaultAutoUpdate": false,
+        "label": label,
+        "displayName": format!("BlizzNux {label}"),
+        "location": location,
+        "selected": selected,
+    }));
+    true
+}
+
 /// Register our WoW installs in WowUp's preferences (merging with whatever is there).
 pub(crate) fn seed_wowup_installs() -> Result<usize, String> {
     let installs = wow_installs();
@@ -584,27 +627,13 @@ pub(crate) fn seed_wowup_installs() -> Result<usize, String> {
     let mut list: Vec<serde_json::Value> = prefs["wow_installations"].as_array().cloned().unwrap_or_default();
     let mut added = 0;
     for w in installs {
-        let client_type = wowup_client_type(&w.flavor, &w.exe);
         let location = PathBuf::from(&w.path).join(&w.exe);
         if !location.is_file() {
             continue;
         }
-        let loc = location.display().to_string();
-        if list.iter().any(|i| i["location"].as_str() == Some(loc.as_str())) {
-            continue;
+        if merge_wowup_install(&mut list, &w.flavor, &w.exe, &w.label, &location.display().to_string()) {
+            added += 1;
         }
-        let id = format!("blizznux-{}", w.flavor.trim_matches('_'));
-        list.push(serde_json::json!({
-            "id": id,
-            "clientType": client_type,
-            "defaultAddonChannelType": 0,
-            "defaultAutoUpdate": false,
-            "label": "BlizzNux",
-            "displayName": format!("BlizzNux {}", w.label),
-            "location": loc,
-            "selected": list.is_empty(),
-        }));
-        added += 1;
     }
     prefs["wow_installations"] = serde_json::Value::Array(list);
     fs::write(&file, serde_json::to_string_pretty(&prefs).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
