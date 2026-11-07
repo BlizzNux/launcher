@@ -410,8 +410,10 @@ function showSession(s) {
   $("#launch").textContent = !state.installed ? "Set up Battle.net" : session.battlenet ? "Battle.net is running" : "Launch Battle.net";
   // Battle.net can keep running with no window (closed to the tray); this is the way to quit it.
   // Not while a game runs: closing Battle.net then could take the game down.
+  const running = state.installed && session.battlenet;
+  $("#launch").classList.toggle("is-running", running);
   const close = $("#close-bnet");
-  close.classList.toggle("hidden", !session.battlenet);
+  close.classList.toggle("hidden", !running);
   close.disabled = !!session.game;
   close.title = session.game ? `Close ${session.game} first.` : "Quit Battle.net and everything it left running.";
 }
