@@ -1504,6 +1504,72 @@ pub fn battlenet_running() -> bool {
     session_state().battlenet
 }
 
+/// The game running in this prefix right now, if any, read from the processes rather than the
+/// watcher so a game started in the last few seconds still counts.
+fn game_in_prefix(prefix: &Path) -> Option<&'static str> {
+    GAMES.iter().find(|g| !pids_of(g.3, Some(prefix)).is_empty()).map(|g| g.1)
+}
+
+/// Battle.net's processes and its Agent in this prefix. When the last of them exits, Wine's
+/// helpers (explorer, wineserver) end on their own, and with them the wrapper's sleep inhibitor.
+fn battlenet_session_pids(prefix: &Path) -> Vec<u32> {
+    let mut pids = pids_of(&BATTLENET, Some(prefix));
+    pids.extend(pids_of(&AGENT, Some(prefix)));
+    pids
+}
+
+fn signal_all(pids: &[u32], sig: i32) {
+    for pid in pids {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::kill(*pid as libc::pid_t, sig);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (pid, sig);
+    }
+}
+
+/// Close Battle.net for good: its window may be gone (closed to the tray) while it and the Agent
+/// keep running and keep the computer from sleeping. Never while a game runs in the prefix, so
+/// it cannot take a game down. Asks politely first (SIGTERM), and only forces (SIGKILL) what is
+/// still there after ten seconds. Only touches processes in the launcher's own prefix.
+#[tauri::command]
+pub async fn close_battlenet() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let prefix = current_prefix();
+        if let Some(game) = game_in_prefix(&prefix) {
+            return Err(format!("{game} is running. Close the game first, then close Battle.net."));
+        }
+        let pids = battlenet_session_pids(&prefix);
+        if pids.is_empty() {
+            return Ok("Battle.net is not running.".to_string());
+        }
+        note(&format!("{} closing Battle.net ({} processes)", now_iso(), pids.len()));
+        #[cfg(target_os = "linux")]
+        signal_all(&pids, libc::SIGTERM);
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(500));
+            if battlenet_session_pids(&prefix).is_empty() {
+                return Ok("Battle.net is closed.".to_string());
+            }
+        }
+        if game_in_prefix(&prefix).is_some() {
+            return Err("A game started while Battle.net was closing, so it was left running.".to_string());
+        }
+        #[cfg(target_os = "linux")]
+        signal_all(&battlenet_session_pids(&prefix), libc::SIGKILL);
+        std::thread::sleep(Duration::from_secs(1));
+        if battlenet_session_pids(&prefix).is_empty() {
+            note(&format!("{} Battle.net did not exit on request and was stopped", now_iso()));
+            Ok("Battle.net is closed.".to_string())
+        } else {
+            Err("Battle.net did not close. Try again in a moment.".to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Blizzard's Agent keeps the local port it listens on in this file. Battle.net and the games
 /// read it to find the Agent that is already running.
 fn agent_port_file(prefix: &Path) -> PathBuf {

@@ -793,6 +793,7 @@ pub fn run() {
             reports::waiting_reports,
             reports::account_status,
             reports::session_state,
+            reports::close_battlenet,
             reports::link_start,
             reports::link_poll,
             reports::link_cancel,
