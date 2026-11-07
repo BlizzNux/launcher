@@ -29,6 +29,11 @@ body { display: flex; flex-direction: column; }
 .launch { background: var(--accent); color: #06101f; border: 0; border-radius: 10px; padding: 10px 18px;
   font-weight: 700; font-size: 15px; cursor: pointer; white-space: nowrap; }
 .launch:hover { filter: brightness(1.1); }
+/* While Battle.net runs the Launch button is only a status: quiet text the same height as the
+   Close Battle.net button next to it (same padding, border and font as .flat). */
+.launch.is-running { background: none; color: var(--muted); border: 1px solid transparent; border-radius: 8px;
+  padding: 8px 12px; font: inherit; font-weight: 400; cursor: default; }
+.launch.is-running:hover { filter: none; }
 .play { display: flex; align-items: center; gap: 0; }
 .play select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-right: 0;
   border-radius: 8px 0 0 8px; padding: 8px 10px; font: inherit; max-width: 190px; }

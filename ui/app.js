@@ -408,6 +408,23 @@ let session = { battlenet: false, game: null };
 function showSession(s) {
   if (s) session = s;
   $("#launch").textContent = !state.installed ? "Set up Battle.net" : session.battlenet ? "Battle.net is running" : "Launch Battle.net";
+  // Battle.net can keep running with no window (closed to the tray); this is the way to quit it.
+  // Not while a game runs: closing Battle.net then could take the game down.
+  const running = state.installed && session.battlenet;
+  $("#launch").classList.toggle("is-running", running);
+  const close = $("#close-bnet");
+  close.classList.toggle("hidden", !running);
+  close.disabled = !!session.game;
+  close.title = session.game ? `Close ${session.game} first.` : "Quit Battle.net and everything it left running.";
+}
+
+async function closeBattlenet() {
+  if (session.game) { status(`Close ${session.game} first, then close Battle.net.`, true); return; }
+  const close = $("#close-bnet");
+  close.disabled = true;
+  status("Closing Battle.net…");
+  try { status(await invoke("close_battlenet")); } catch (e) { status(String(e), true); }
+  try { showSession(await invoke("session_state")); } catch { close.disabled = false; }
 }
 
 async function refreshState(openSetupIfMissing = false) {
@@ -591,6 +608,7 @@ async function init() {
   $("#report-comment").addEventListener("change", () => { if (report.body) previewReport(); });
   window.__TAURI__.event.listen("game-ended", onGameEnded);
   window.__TAURI__.event.listen("session-state", (e) => showSession(e.payload));
+  $("#close-bnet").onclick = closeBattlenet;
   window.__TAURI__.event.listen("game-closed-early", onGameClosedEarly);
   window.__TAURI__.event.listen("launch-progress", (e) => status(String(e.payload)));
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
