@@ -56,9 +56,17 @@ local stub); the default is the URL above.
   "target": "battlenet",        // launch reports only
   "outcome": "perfect" | "issues" | "broken" | "ok" | "failed",
   "comment": "free text from the user, may be empty",
+  "lab": ["wow64"],             // optional: the Labs settings that were on, absent when none was
   "log": "last lines of the launcher log (repeats folded as \"(×N) …\"), problem reports only, paths scrubbed"
 }
 ```
+
+`lab` is an optional array of Labs keys (Settings > Labs, experimental opt-in settings). Current key:
+`"wow64"` = Wine WoW64 mode (`PROTON_USE_WOW64=1`). On `run` and `launch` reports it is the setting
+in effect for that session, captured when the Battle.net launch or game session started, so a report
+sent later from the outbox still carries it. The launcher omits the field entirely when no Labs
+setting was on, so ordinary reports are unchanged. A site that does not know a key should keep
+treating the report as modified.
 
 `comment` is accepted on `bug`, `run` and failed `launch` reports. The launcher cuts it to 2000 characters and sends it with `bug` and `run` reports (today
 it sends none with a `launch`); the site keeps up to its own cap (4000 characters). The site cuts
@@ -252,6 +260,14 @@ is also used for the cookie). The one-time-code exchange from an earlier revisio
   is aggregated into one running reply ("confirmed by N people") rather than posted one by one;
   an automatic `broken` run gets its own reply with its log. A WoW version the site does not
   follow is only recorded, and answered `202 {"status": "not tracked"}`.
+
+### Reports with `lab`
+
+- **run** and **launch** reports with `lab` go to a private "Lab Reports" tag (staff only), not
+  to the Updates threads. They show the outcome with " (Modified)" and a "Changed in Labs" line
+  naming the settings, and never count on the Compatibility board, in "confirmed by N people"
+  replies or in the launcher's release thread.
+- **bug** reports with `lab` stay in Launcher reports, with the title suffixed " (Modified)".
 
 ## Rate limits (endpoint side)
 

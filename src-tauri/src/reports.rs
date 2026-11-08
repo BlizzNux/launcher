@@ -1009,6 +1009,65 @@ impl BuildError {
     }
 }
 
+/// The Labs settings that are on, as the keys the site knows them by.
+fn labs_in(config: &BTreeMap<String, String>) -> Vec<String> {
+    let mut lab = Vec::new();
+    if config.get("LAB_WOW64").is_some_and(|v| v == "1") {
+        lab.push("wow64".to_string());
+    }
+    lab
+}
+
+/// Adds `lab` to a report body, only when a Labs setting was on: other reports stay as they were.
+fn mark_lab(body: &mut serde_json::Value, lab: &[String]) {
+    if !lab.is_empty() {
+        body["lab"] = serde_json::json!(lab);
+    }
+}
+
+/// The Labs settings in effect for the latest Battle.net launch or game session, captured when it
+/// started: a run or launch report is about that session, whatever the setting is when it is sent.
+static SESSION_LAB: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+fn set_session_lab(lab: Vec<String>) {
+    if let Ok(mut s) = SESSION_LAB.lock() {
+        *s = Some(lab);
+    }
+}
+
+/// The Labs settings a running program was started with: the wrapper puts them in BLIZZNUX_LAB
+/// (comma separated). A program whose environment cannot be read falls back to the setting now.
+fn lab_of_pid(pid: u32) -> Vec<String> {
+    match fs::read(format!("/proc/{pid}/environ")) {
+        Ok(env) => env
+            .split(|b| *b == 0)
+            .find_map(|kv| kv.strip_prefix(b"BLIZZNUX_LAB="))
+            .map(|v| String::from_utf8_lossy(v).split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+            .unwrap_or_default(),
+        Err(_) => labs_in(&load_config()),
+    }
+}
+
+/// The Labs settings a report of this kind is about: the session's for run and launch reports.
+fn report_lab(kind: &str) -> Vec<String> {
+    match (kind, SESSION_LAB.lock().ok().and_then(|s| s.clone())) {
+        ("run" | "launch", Some(session)) => session,
+        _ => labs_in(&load_config()),
+    }
+}
+
+/// The once-a-day stamp for a build: a Labs session gets its own, so it and a normal success
+/// on the same day do not swallow each other. Without Labs the stamp is the plain one.
+fn stamp_for(kind: &str, build: &str, date: &str, lab: &[String]) -> String {
+    let mut stamp = format!("{kind}:{build}:{date}");
+    if !lab.is_empty() {
+        let mut keys = lab.to_vec();
+        keys.sort();
+        stamp.push_str(&format!(":lab={}", keys.join(",")));
+    }
+    stamp
+}
+
 /// Build the JSON body for a report; the UI shows it before sending. Off the window's thread:
 /// the system profile runs a few programs, and the window must not freeze meanwhile.
 #[tauri::command]
@@ -1035,6 +1094,8 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
         "system": system_profile(),
         "battlenet": battlenet_info(),
     });
+    let lab = report_lab(&kind);
+    mark_lab(&mut body, &lab);
     if let Some(code) = game.as_deref().filter(|c| !c.is_empty()) {
         if let Some(g) = game_info(code) {
             body["game"] = serde_json::to_value(g).map_err(|e| invalid(&e.to_string()))?;
@@ -1142,6 +1203,9 @@ struct Pending {
     /// Kept until the launcher is logged in: the site takes reports only from a logged-in launcher.
     #[serde(default)]
     needs_login: bool,
+    /// The Labs settings that were on for the session, kept so a report sent later says so.
+    #[serde(default)]
+    lab: Vec<String>,
 }
 
 /// How long an undelivered report is kept.
@@ -1192,6 +1256,7 @@ pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<S
         report: None,
         refused_by: None,
         needs_login: false,
+        lab: Vec::new(),
     };
     let linked = !user_token().is_empty();
     let reason = match build(kind, game, outcome, comment) {
@@ -1202,6 +1267,7 @@ pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<S
                 Ok(url) => return Ok(Submitted { sent: true, url, reason: String::new(), needs_login: false, retry: false }),
                 Err(e) => e,
             };
+            pending.lab = body["lab"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
             pending.build = body["game"]["version"].as_str().unwrap_or_default().to_string();
             match e {
                 SendError::LoginRequired(why) => {
@@ -1306,6 +1372,9 @@ pub async fn flush_reports() -> usize {
                 Ok(body) if !pending.build.is_empty() && body["game"]["version"].as_str() != Some(pending.build.as_str()) => { discard(); continue }
                 Ok(mut body) => {
                     body["created_at"] = iso(pending.saved_at).into();
+                    if !pending.lab.is_empty() {
+                        mark_lab(&mut body, &pending.lab);
+                    }
                     body
                 }
                 Err(BuildError::UnknownBuild(_)) => continue,
@@ -1352,7 +1421,7 @@ fn daily_stamp(kind: &str, game: Option<&str>, outcome: &str) -> Option<String> 
         ("run", Some(code)) => game_info(code).map(|g| format!("{}:{}", g.code, g.version)).unwrap_or_default(),
         _ => String::new(),
     };
-    let stamp = format!("{kind}:{build}:{}", &now_iso()[..10]);
+    let stamp = stamp_for(kind, &build, &now_iso()[..10], &report_lab(kind));
     let key = if kind == "launch" { "LAST_LAUNCH_OK" } else { "LAST_RUN_OK" };
     let c = load_config();
     if c.get(key).map_or(false, |v| v.split(';').any(|s| s == stamp)) {
@@ -1386,13 +1455,13 @@ fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str,
     let h = app.clone();
     tauri::async_runtime::spawn(async move {
         match report_body(kind.clone(), game, Some(outcome.clone()), Some(comment)) {
-            Ok(body) => match send_report(body).await {
+            Ok(body) => { let lab = body.get("lab").is_some(); match send_report(body).await {
                 Ok(url) => {
                     mark_sent(&kind, &stamp);   // only an accepted report counts for today
-                    let _ = h.emit("report-sent", serde_json::json!({ "kind": kind, "outcome": outcome, "url": url }));
+                    let _ = h.emit("report-sent", serde_json::json!({ "kind": kind, "outcome": outcome, "url": url, "lab": lab }));
                 }
                 Err(e) => eprintln!("[report] {kind} not sent: {e}"),
-            },
+            } },
             Err(e) => eprintln!("[report] {kind} not built: {e}"),
         }
     });
@@ -1400,6 +1469,7 @@ fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str,
 
 /// After Launch: did the Battle.net client actually come up? Reports ok/failed when sharing.
 pub fn watch_launch(app: AppHandle) {
+    set_session_lab(labs_in(&load_config()));
     std::thread::spawn(move || {
         let mut start = Instant::now();
         let mut ok = false;
@@ -1692,6 +1762,9 @@ pub fn watch_session(app: AppHandle) {
                     let pid = pids_of(g.3, Some(&prefix)).into_iter().min()?;
                     Some((g, flavor_of(&process_path(pid)), Instant::now(), process_age(pid).unwrap_or(0)))
                 });
+                if let Some(pid) = current.as_ref().and_then(|(g, ..)| pids_of(g.3, Some(&prefix)).into_iter().min().map(|p| (g, p))).map(|(_, p)| p) {
+                    set_session_lab(lab_of_pid(pid));
+                }
                 if current.is_some() {
                     // The game keeps the graphics card awake: look the cards up now, so the report
                     // at the end of the session does not have to wake it again.
@@ -1734,6 +1807,17 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_labs_session_has_its_own_daily_stamp() {
+        let plain = stamp_for("run", "wow:1.2", "2026-11-08", &[]);
+        assert_eq!(plain, "run:wow:1.2:2026-11-08");
+        let lab = stamp_for("run", "wow:1.2", "2026-11-08", &["wow64".to_string()]);
+        assert_eq!(lab, "run:wow:1.2:2026-11-08:lab=wow64");
+        assert_ne!(plain, lab);
+        let two = stamp_for("run", "b", "d", &["b".to_string(), "a".to_string()]);
+        assert_eq!(two, "run:b:d:lab=a,b");
+    }
 
     #[test]
     fn the_runtime_is_named_as_its_own_folder_records_it() {
@@ -1946,6 +2030,25 @@ mod tests {
     }
 
     #[test]
+    fn the_lab_field_is_there_only_when_a_lab_setting_is_on() {
+        let mut config = BTreeMap::new();
+        let mut body = serde_json::json!({ "schema": 1 });
+        mark_lab(&mut body, &labs_in(&config));
+        assert_eq!(body, serde_json::json!({ "schema": 1 }));
+        config.insert("LAB_WOW64".to_string(), "0".to_string());
+        assert!(labs_in(&config).is_empty());
+        config.insert("LAB_WOW64".to_string(), "1".to_string());
+        mark_lab(&mut body, &labs_in(&config));
+        assert_eq!(body["lab"], serde_json::json!(["wow64"]));
+    }
+
+    #[test]
+    fn a_saved_report_from_an_older_launcher_has_no_lab() {
+        let p: Pending = serde_json::from_str(r#"{"kind":"run","game":null,"outcome":null,"comment":null,"saved_at":1,"build":"","report":null,"refused_by":null}"#).unwrap();
+        assert!(p.lab.is_empty());
+    }
+
+    #[test]
     fn problem_reports_are_the_ones_that_carry_the_log() {
         assert!(is_problem("bug", None));
         assert!(is_problem("launch", Some("failed")));
@@ -1979,6 +2082,7 @@ mod tests {
             report: None,
             refused_by: refused_by.map(String::from),
             needs_login,
+            lab: Vec::new(),
         }
     }
 

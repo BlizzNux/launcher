@@ -181,7 +181,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK") {
+                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK" | "LAB_WOW64") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -205,7 +205,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("PREFIX").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
-    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK"] {
+    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64"] {
         if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
@@ -223,7 +223,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
 fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
     let mut current = load_config();
     for (k, v) in values {
-        if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO") {
+        if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO" | "LAB_WOW64") {
             current.insert(k, v.trim().to_string());
         }
     }
@@ -459,6 +459,7 @@ fn readiness() -> Vec<Check> {
     let needs_nvidia32 = vendors.contains(&"nvidia");
     let needs_mesa32 = vendors.iter().any(|v| *v == "amd" || *v == "intel");
     let vk32 = if in_flatpak { ext32 } else { (!needs_nvidia32 || nvidia32) && (!needs_mesa32 || mesa32) && (nvidia32 || mesa32) };
+    let wow64 = load_config().get("LAB_WOW64").is_some_and(|v| v == "1");
     let hint = vendors
         .iter()
         .filter(|v| match **v { "nvidia" => !nvidia32, _ => !mesa32 })
@@ -467,12 +468,8 @@ fn readiness() -> Vec<Check> {
         .join(" and ");
     out.push(Check {
         name: "Vulkan driver (32-bit)".into(),
-        ok: vk32,
-        detail: if vk32 {
-            "found".into()
-        } else {
-            format!("missing for {} — Battle.net and older games need it", if vendors.is_empty() { "your GPU".into() } else { vendors.join(" + ") })
-        },
+        ok: vk32 || wow64,
+        detail: vk32_detail(vk32, wow64, &vendors),
         hint: if in_flatpak { "flatpak install org.freedesktop.Platform.GL32.default and the GL32 extension matching your driver".into() } else if hint.is_empty() { pkg_hint("", family) } else { hint },
         blocking: false,
     });
@@ -825,3 +822,27 @@ const NET_DEBUG_JS: &str = r#"(function(){
   window.addEventListener('error', function(e){ log('jserror', '', location.pathname, '', String(e.message)); });
   window.addEventListener('unhandledrejection', function(e){ log('rejection', '', location.pathname, '', String(e.reason && (e.reason.message || e.reason)).slice(0, 300)); });
 })();"#;
+
+/// What the 32-bit Vulkan check says. Labs: Wine WoW64 mode runs 32-bit code on 64-bit
+/// drivers, so a missing 32-bit driver is not a problem while it is on.
+fn vk32_detail(found: bool, wow64: bool, vendors: &[&str]) -> String {
+    if found {
+        "found".into()
+    } else if wow64 {
+        "not needed while Labs: Wine WoW64 mode is on".into()
+    } else {
+        format!("missing for {} — Battle.net and older games need it", if vendors.is_empty() { "your GPU".into() } else { vendors.join(" + ") })
+    }
+}
+
+#[cfg(test)]
+mod lab_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_32_bit_driver_is_not_needed_in_wow64_mode() {
+        assert_eq!(vk32_detail(false, true, &["amd"]), "not needed while Labs: Wine WoW64 mode is on");
+        assert_eq!(vk32_detail(true, true, &["amd"]), "found");
+        assert!(vk32_detail(false, false, &["amd"]).starts_with("missing for amd"));
+    }
+}
