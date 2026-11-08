@@ -386,14 +386,31 @@ fn runtime_in_use() -> String {
     runtime_under(&base.join("umu"))
 }
 
-/// The launcher's own build: the only one Battle.net is started with.
+/// A Proton build chosen in Labs (a folder) or by the packager (BLIZZNUX_PROTON, which wins).
+pub(crate) fn custom_proton() -> Option<PathBuf> {
+    custom_proton_from(&load_config(), std::env::var("BLIZZNUX_PROTON").ok().as_deref())
+}
+
+fn custom_proton_from(config: &BTreeMap<String, String>, env: Option<&str>) -> Option<PathBuf> {
+    let pick = |s: &str| Some(s.trim().trim_end_matches('/')).filter(|s| !s.is_empty()).map(PathBuf::from);
+    env.and_then(pick).or_else(|| config.get("LAB_PROTON_DIR").and_then(|v| pick(v)))
+}
+
+/// How a Proton folder is named in reports: its version file's last word (the build name), else the
+/// folder's name.
+fn proton_label(dir: &Path) -> String {
+    let ver = fs::read_to_string(dir.join("version")).unwrap_or_default();
+    let ver = ver.split_whitespace().last().unwrap_or("").to_string();
+    if ver.is_empty() { dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() } else { ver }
+}
+
+/// The build Battle.net is started with: the Proton chosen in Labs if any, else the launcher's own.
 fn proton_in_use() -> String {
+    if let Some(d) = custom_proton() {
+        return if d.join("proton").is_file() { proton_label(&d) } else { "chosen Proton not found".into() };
+    }
     match own_proton() {
-        Some(d) => {
-            let ver = fs::read_to_string(d.join("version")).unwrap_or_default();
-            let ver = ver.split_whitespace().last().unwrap_or("").to_string();
-            if ver.is_empty() { d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() } else { ver }
-        }
+        Some(d) => proton_label(&d),
         None => "not downloaded yet".into(),
     }
 }
@@ -1009,12 +1026,30 @@ impl BuildError {
     }
 }
 
-/// The Labs settings that are on, as the keys the site knows them by.
+/// The Labs settings that are on, as the keys the site knows them by (sorted).
 fn labs_in(config: &BTreeMap<String, String>) -> Vec<String> {
+    labs_from(config, std::env::var("BLIZZNUX_PROTON").ok().as_deref())
+}
+
+fn labs_from(config: &BTreeMap<String, String>, env_proton: Option<&str>) -> Vec<String> {
     let mut lab = Vec::new();
+    if config.get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1") {
+        lab.push("direct".to_string());
+    }
+    if custom_proton_from(config, env_proton).is_some() {
+        lab.push("proton".to_string());
+    }
     if config.get("LAB_WOW64").is_some_and(|v| v == "1") {
         lab.push("wow64".to_string());
     }
+    lab
+}
+
+/// The keys in a BLIZZNUX_LAB value (comma separated), sorted.
+fn parse_lab(value: &str) -> Vec<String> {
+    let mut lab: Vec<String> = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+    lab.sort();
+    lab.dedup();
     lab
 }
 
@@ -1042,7 +1077,7 @@ fn lab_of_pid(pid: u32) -> Vec<String> {
         Ok(env) => env
             .split(|b| *b == 0)
             .find_map(|kv| kv.strip_prefix(b"BLIZZNUX_LAB="))
-            .map(|v| String::from_utf8_lossy(v).split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+            .map(|v| parse_lab(&String::from_utf8_lossy(v)))
             .unwrap_or_default(),
         Err(_) => labs_in(&load_config()),
     }
@@ -1480,7 +1515,7 @@ pub fn watch_launch(app: AppHandle) {
             }
             // The first start downloads the launcher's own Proton before anything else. That is
             // not Battle.net failing to start: the two minutes count from the end of it.
-            if let Some(doing) = proton_arriving(&proton_dir()) {
+            if let Some(doing) = proton_arriving(&proton_dir()).filter(|_| custom_proton().is_none()) {
                 start = Instant::now();
                 let _ = app.emit("launch-progress", doing);
             }
@@ -2040,6 +2075,54 @@ mod tests {
         config.insert("LAB_WOW64".to_string(), "1".to_string());
         mark_lab(&mut body, &labs_in(&config));
         assert_eq!(body["lab"], serde_json::json!(["wow64"]));
+    }
+
+    #[test]
+    fn labs_in_knows_each_key_and_sorts_them() {
+        let mut c = BTreeMap::new();
+        assert!(labs_from(&c, None).is_empty());
+        c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
+        assert_eq!(labs_from(&c, None), ["direct"]);
+        c.insert("LAB_DIRECT_PROTON".to_string(), "0".to_string());
+        c.insert("LAB_PROTON_DIR".to_string(), "/opt/proton/".to_string());
+        assert_eq!(labs_from(&c, None), ["proton"]);
+        c.insert("LAB_PROTON_DIR".to_string(), "".to_string());
+        assert!(labs_from(&c, None).is_empty());
+        assert_eq!(labs_from(&c, Some("/nix/store/x")), ["proton"]);
+        assert!(labs_from(&c, Some("")).is_empty());
+        c.insert("LAB_WOW64".to_string(), "1".to_string());
+        c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
+        c.insert("LAB_PROTON_DIR".to_string(), "/opt/p".to_string());
+        assert_eq!(labs_from(&c, None), ["direct", "proton", "wow64"]);
+    }
+
+    #[test]
+    fn the_wrappers_lab_list_is_split_into_keys() {
+        assert_eq!(parse_lab("direct,proton,wow64"), ["direct", "proton", "wow64"]);
+        assert_eq!(parse_lab("wow64,direct"), ["direct", "wow64"]);
+        assert_eq!(parse_lab("wow64"), ["wow64"]);
+        assert!(parse_lab("").is_empty());
+    }
+
+    #[test]
+    fn the_env_proton_wins_over_the_chosen_folder() {
+        let mut c = BTreeMap::new();
+        c.insert("LAB_PROTON_DIR".to_string(), "/chosen/".to_string());
+        assert_eq!(custom_proton_from(&c, None), Some(PathBuf::from("/chosen")));
+        assert_eq!(custom_proton_from(&c, Some("/env")), Some(PathBuf::from("/env")));
+        assert_eq!(custom_proton_from(&c, Some("")), Some(PathBuf::from("/chosen")));
+        assert_eq!(custom_proton_from(&BTreeMap::new(), None), None);
+    }
+
+    #[test]
+    fn proton_is_named_by_its_version_file_else_its_folder() {
+        let dir = std::env::temp_dir().join(format!("blizznux-protonlabel-test-{}", std::process::id()));
+        let build = dir.join("GE-Proton9-27");
+        fs::create_dir_all(&build).unwrap();
+        assert_eq!(proton_label(&build), "GE-Proton9-27");
+        fs::write(build.join("version"), "1735000000 GE-Proton9-27-custom\n").unwrap();
+        assert_eq!(proton_label(&build), "GE-Proton9-27-custom");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

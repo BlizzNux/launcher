@@ -510,14 +510,29 @@ async function loadConfig() {
   const c = await invoke("read_config");
   $("#cfg-reports-auto").checked = c.REPORTS_AUTO === "1";
   $("#cfg-lab-wow64").checked = c.LAB_WOW64 === "1";
+  $("#cfg-lab-direct").checked = c.LAB_DIRECT_PROTON === "1";
+  $("#cfg-lab-proton").value = c.LAB_PROTON_DIR || "";
+  const envProton = !!c.BLIZZNUX_PROTON_SET;
+  $("#cfg-lab-proton").disabled = envProton;
+  $("#cfg-lab-proton-env").textContent = envProton ? "Set by BLIZZNUX_PROTON." : "";
   refreshAccount();
   const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
   off.checked = true;
 }
 
+// The installed Proton is checked on the Rust side when it is saved; a bad folder is shown under the field.
+async function saveProtonDir() {
+  const out = $("#cfg-lab-proton-status");
+  try {
+    await invoke("write_config", { values: { LAB_PROTON_DIR: $("#cfg-lab-proton").value } });
+    out.textContent = $("#cfg-lab-proton").value.trim() ? "Saved. Used the next time Battle.net starts." : "Saved. BlizzNux's own Proton is used.";
+    setTimeout(() => { out.textContent = ""; }, 3000);
+  } catch (e) { out.textContent = String(e); }
+}
+
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0", LAB_WOW64: $("#cfg-lab-wow64").checked ? "1" : "0" } });
+    await invoke("write_config", { values: { OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0", LAB_WOW64: $("#cfg-lab-wow64").checked ? "1" : "0", LAB_DIRECT_PROTON: $("#cfg-lab-direct").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -618,6 +633,8 @@ async function init() {
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#cfg-share").addEventListener("change", saveConfig);
   $("#cfg-lab-wow64").addEventListener("change", saveConfig);
+  $("#cfg-lab-direct").addEventListener("change", saveConfig);
+  $("#cfg-lab-proton").addEventListener("change", saveProtonDir);
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
     showLog(true);

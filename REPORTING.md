@@ -61,8 +61,14 @@ local stub); the default is the URL above.
 }
 ```
 
-`lab` is an optional array of Labs keys (Settings > Labs, experimental opt-in settings). Current key:
-`"wow64"` = Wine WoW64 mode (`PROTON_USE_WOW64=1`). On `run` and `launch` reports it is the setting
+`lab` is an optional array of Labs keys (Settings > Labs, experimental opt-in settings). Current keys (sorted when several are on, e.g. `["direct","proton","wow64"]`):
+- `"wow64"` = Wine WoW64 mode (`PROTON_USE_WOW64=1`).
+- `"proton"` = a Proton build already on the computer is used instead of the launcher's own (Labs
+  folder, or the packager's `BLIZZNUX_PROTON`). `system.proton` then names the build actually used
+  (its `version` file's build name, else its folder name).
+- `"direct"` = Proton is started directly, without umu-launcher's Steam Runtime container.
+
+On `run` and `launch` reports `lab` is the setting
 in effect for that session, captured when the Battle.net launch or game session started, so a report
 sent later from the outbox still carries it. The launcher omits the field entirely when no Labs
 setting was on, so ordinary reports are unchanged. A site that does not know a key should keep

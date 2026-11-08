@@ -13,6 +13,7 @@ CONFIG=$CONFIG_DIR/config
 # Blizzard's own download endpoint. The installer is never redistributed by this project.
 INSTALLER_URL='https://www.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live'
 LAUNCHER_REL='drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe'
+LAUNCHER_WIN='C:\Program Files (x86)\Battle.net\Battle.net Launcher.exe'
 # The umu-launcher release every install runs, kept in the launcher's data folder. A umu-launcher of the
 # system is not used: every distribution has another version, or none. Change the version and the checksum
 # together, here and in the Flatpak manifest, which carries the same release.
@@ -30,7 +31,7 @@ PROTON_SHA256=35e16eab636724e3ed7aa8e2dbc33eb8e102e0c63bbc28b5a39af544c75d5bd3
 PROTON_MB=332
 PROTON_DIR=$DATA_DIR/proton
 
-PREFIX=""; OFFLOAD=auto; GAME=""; LAB_WOW64=0
+PREFIX=""; OFFLOAD=auto; GAME=""; LAB_WOW64=0; LAB_PROTON_DIR=""; LAB_DIRECT_PROTON=0
 
 usage() {
 	cat <<USAGE
@@ -79,7 +80,7 @@ load_config() {
 	[[ -f $CONFIG ]] || return 0
 	local k v
 	while IFS='=' read -r k v; do
-		case $k in PREFIX|OFFLOAD|LAB_WOW64) printf -v "$k" '%s' "$v" ;; esac
+		case $k in PREFIX|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON) printf -v "$k" '%s' "$v" ;; esac
 	done < "$CONFIG"
 }
 
@@ -88,8 +89,8 @@ save_config() {
 	# The desktop app keeps its own keys (account, report settings) in the same file: carry them over.
 	# A Proton build chosen with an earlier version is dropped: the launcher's own is the only one now.
 	local keep=""
-	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD|LAB_WOW64)=' "$CONFIG" || true)
-	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ $LAB_WOW64 != 1 ]] || printf 'LAB_WOW64=1\n'; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
+	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON)=' "$CONFIG" || true)
+	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ $LAB_WOW64 != 1 ]] || printf 'LAB_WOW64=1\n'; [[ -z $LAB_PROTON_DIR ]] || printf 'LAB_PROTON_DIR=%s\n' "$LAB_PROTON_DIR"; [[ $LAB_DIRECT_PROTON != 1 ]] || printf 'LAB_DIRECT_PROTON=1\n'; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
 proton_sum_ok() { echo "$PROTON_SHA256  $1" | sha256sum -c --quiet - >/dev/null 2>&1; }
@@ -138,9 +139,30 @@ fetch_proton() {
 	rm -rf "$tmp" "$part"
 }
 
+# Labs: a Proton build already on this computer. BLIZZNUX_PROTON (a packager's override, not in the
+# app) wins over the folder chosen in Settings > Labs. Prints the folder, or nothing when neither is set.
+custom_proton() {
+	local d=${BLIZZNUX_PROTON:-}
+	[[ -n $d ]] || d=$LAB_PROTON_DIR
+	printf '%s' "${d%/}"
+}
+
+# Where the custom Proton came from, for messages.
+custom_proton_source() {
+	if [[ -n ${BLIZZNUX_PROTON:-} ]]; then echo "BLIZZNUX_PROTON"; else echo "Labs"; fi
+}
+
 # Proton to use: the launcher's own build, downloaded on first use. A Proton of the system is not
-# used: it changes with every system update, and no two machines would run the same one.
+# used: it changes with every system update, and no two machines would run the same one. Unless the
+# user asked for one in Labs (or a packager with BLIZZNUX_PROTON): then that one, or an error, never
+# a quiet fall back to the download.
 find_proton() {
+	local custom; custom=$(custom_proton)
+	if [[ -n $custom ]]; then
+		[[ -f $custom/proton && -x $custom/proton ]] || die "the Proton you chose ($(custom_proton_source): $custom) is not usable: the folder must hold an executable file named proton"
+		echo "$custom"
+		return
+	fi
 	[[ -x $PROTON_DIR/$PROTON_NAME/proton ]] || fetch_proton >&2   # callers read the path from stdout
 	echo "$PROTON_DIR/$PROTON_NAME"
 }
@@ -247,16 +269,56 @@ find_umu() {
 	own_umu || { fetch_umu >&2; echo "$UMU_DIR/umu-run"; }   # callers read the path from stdout
 }
 
+# Exports BLIZZNUX_LAB, the Labs settings in effect (comma separated, sorted), and what they need.
+labs_env() {
+	local labs=()
+	[[ $LAB_DIRECT_PROTON != 1 ]] || labs+=(direct)
+	[[ -z $(custom_proton) ]] || labs+=(proton)
+	if [[ $LAB_WOW64 == 1 ]]; then
+		labs+=(wow64)
+		export PROTON_USE_WOW64=1
+		log "Labs: Wine WoW64 mode on (PROTON_USE_WOW64=1)"
+	fi
+	[[ -z $(custom_proton) ]] || log "Labs: using the installed Proton $(custom_proton) ($(custom_proton_source))"
+	[[ $LAB_DIRECT_PROTON != 1 ]] || log "Labs: running Proton directly, without umu-launcher's container"
+	(( ${#labs[@]} )) || return 0
+	local IFS=,
+	export BLIZZNUX_LAB="${labs[*]}"
+}
+
+# Labs: Proton without umu. Proton wants the prefix as a Steam "compat data" folder holding a pfx
+# folder. umu-launcher 1.4.4 uses the prefix itself as that folder and makes pfx a symlink to "."
+# inside it, so the same prefix serves both ways and nothing is moved.
+direct_setup() {
+	mkdir -p "$PREFIX/shadercache" "$PREFIX/gstreamer-1.0" "$DATA_DIR/steam"
+	[[ ! -L $PREFIX/pfx ]] || rm -f "$PREFIX/pfx"
+	[[ -d $PREFIX/pfx ]] || ln -s . "$PREFIX/pfx"
+	touch "$PREFIX/tracked_files"
+}
+
+run_direct() {
+	local proton; proton=$(find_proton)
+	direct_setup
+	local appid=0
+	[[ ${GAMEID:-umu-default} =~ ^umu-([[:alnum:]_]+)$ ]] && appid=${BASH_REMATCH[1]}
+	export WINEPREFIX=$PREFIX STEAM_COMPAT_DATA_PATH=$PREFIX STEAM_COMPAT_SHADER_PATH=$PREFIX/shadercache \
+		STEAM_COMPAT_CLIENT_INSTALL_PATH=$DATA_DIR/steam SteamAppId=$appid SteamGameId=$appid
+	gpu_env
+	labs_env
+	local inhibit=()
+	command -v systemd-inhibit >/dev/null && inhibit=(systemd-inhibit --what=idle:sleep --why="Battle.net is running")
+	log "proton: $proton (direct)"; log "prefix: $PREFIX"
+	"${inhibit[@]}" "$proton/proton" waitforexitandrun "$@"
+}
+
 run_umu() {
+	if [[ $LAB_DIRECT_PROTON == 1 ]]; then run_direct "$@"; return; fi
 	local umu; umu=$(find_umu)
 	local proton; proton=$(find_proton)
 	export WINEPREFIX=$PREFIX PROTONPATH=$proton GAMEID=${GAMEID:-umu-default} STORE=none PROTON_VERB=waitforexitandrun
 	gpu_env
 	# Labs (experimental, opt-in). BLIZZNUX_LAB tells the launcher which were on for this session.
-	if [[ $LAB_WOW64 == 1 ]]; then
-		export PROTON_USE_WOW64=1 BLIZZNUX_LAB=wow64
-		log "Labs: Wine WoW64 mode on (PROTON_USE_WOW64=1)"
-	fi
+	labs_env
 	local inhibit=()
 	command -v systemd-inhibit >/dev/null && inhibit=(systemd-inhibit --what=idle:sleep --why="Battle.net is running")
 	log "proton: $proton"; log "prefix: $PREFIX"
@@ -271,7 +333,14 @@ cmd_install() {
 	log "downloading the Battle.net installer from Blizzard"
 	curl -fL --retry 3 --progress-bar -o "$setup" "$INSTALLER_URL"
 	log "running the installer: sign in when it asks; Battle.net opens when it is done"
-	run_umu "$setup"
+	if [[ $LAB_DIRECT_PROTON == 1 ]]; then
+		# Without umu, Proton hands a path outside the prefix to a shim that is not there: run a copy inside it.
+		mkdir -p "$PREFIX/drive_c"
+		cp -f "$setup" "$PREFIX/drive_c/blizznux-setup.exe"
+		run_umu 'C:\blizznux-setup.exe'
+	else
+		run_umu "$setup"
+	fi
 	[[ -f $PREFIX/$LAUNCHER_REL ]] || die "the installer finished but Battle.net was not found; run 'blizznux-run install' again"
 	log "installed"
 }
@@ -288,10 +357,12 @@ cmd_dpi() {
 cmd_launch() {
 	ensure_prefix
 	[[ -f $PREFIX/$LAUNCHER_REL ]] || cmd_install
+	local exe=$PREFIX/$LAUNCHER_REL
+	[[ $LAB_DIRECT_PROTON != 1 ]] || exe=$LAUNCHER_WIN   # direct mode starts it by its Windows path
 	if [[ -n $GAME ]]; then
-		run_umu "$PREFIX/$LAUNCHER_REL" --exec="launch $GAME"
+		run_umu "$exe" --exec="launch $GAME"
 	else
-		run_umu "$PREFIX/$LAUNCHER_REL"
+		run_umu "$exe"
 	fi
 }
 
@@ -309,12 +380,16 @@ cmd_doctor() {
 	ensure_prefix
 	local umu; umu=$(own_umu || true)
 	echo "blizznux-run $VERSION"
-	if [[ -n $umu ]]; then
+	if [[ $LAB_DIRECT_PROTON == 1 ]]; then
+		echo "mode:      Proton directly, without umu-launcher (Labs)"
+	elif [[ -n $umu ]]; then
 		echo "umu-run:   $umu $("$umu" --version 2>/dev/null | head -1)"
 	else
 		echo "umu-run:   $UMU_VERSION (downloaded on first use)"
 	fi
-	if [[ -x $PROTON_DIR/$PROTON_NAME/proton ]]; then
+	if [[ -n $(custom_proton) ]]; then
+		echo "proton:    $(custom_proton) (from $(custom_proton_source)$([[ -x $(custom_proton)/proton ]] || echo '; NOT usable: no executable proton file'))"
+	elif [[ -x $PROTON_DIR/$PROTON_NAME/proton ]]; then
 		echo "proton:    $PROTON_DIR/$PROTON_NAME"
 	else
 		echo "proton:    $PROTON_VERSION (downloaded on first use)"

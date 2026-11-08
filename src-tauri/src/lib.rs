@@ -1,7 +1,7 @@
 // BlizzNux launcher — desktop app. GPL-3.0-or-later. Not affiliated with Blizzard Entertainment.
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Manager};
 
@@ -181,7 +181,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK" | "LAB_WOW64") {
+                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK" | "LAB_WOW64" | "LAB_PROTON_DIR" | "LAB_DIRECT_PROTON") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -192,7 +192,12 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
 
 #[tauri::command]
 fn read_config() -> BTreeMap<String, String> {
-    load_config()
+    let mut c = load_config();
+    // Not a saved setting: tells the window that the packager's BLIZZNUX_PROTON is in charge.
+    if std::env::var("BLIZZNUX_PROTON").is_ok_and(|v| !v.trim().is_empty()) {
+        c.insert("BLIZZNUX_PROTON_SET".into(), "1".into());
+    }
+    c
 }
 
 pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), String> {
@@ -205,7 +210,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("PREFIX").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
-    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64"] {
+    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64", "LAB_PROTON_DIR", "LAB_DIRECT_PROTON"] {
         if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
@@ -223,7 +228,13 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
 fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
     let mut current = load_config();
     for (k, v) in values {
-        if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO" | "LAB_WOW64") {
+        if k == "LAB_PROTON_DIR" {
+            let dir = v.trim().trim_end_matches('/').to_string();
+            if !dir.is_empty() {
+                check_proton_dir(&dir)?;
+            }
+            current.insert(k, dir);
+        } else if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO" | "LAB_WOW64" | "LAB_DIRECT_PROTON") {
             current.insert(k, v.trim().to_string());
         }
     }
@@ -379,10 +390,12 @@ fn readiness() -> Vec<Check> {
     // The wrapper downloads the launcher's own umu-launcher on first use; running it needs python3.
     let umu = umu_run();
     let python = on_path("python3");
+    let direct = load_config().get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1");
     out.push(Check {
         name: "umu-launcher".into(),
-        ok: umu.is_some() || python,
+        ok: direct || umu.is_some() || python,
         detail: match &umu {
+            _ if direct => "not needed while Labs: running Proton directly is on".into(),
             Some(_) => "found (the launcher's own copy)".into(),
             None if python => "not downloaded yet; the launcher fetches its own copy on first use".into(),
             None => "needs python3, which was not found".into(),
@@ -392,20 +405,25 @@ fn readiness() -> Vec<Check> {
             "fedora" => "sudo dnf install python3".into(),
             _ => "sudo apt install python3".into(),
         },
-        blocking: true,
+        blocking: !direct,
     });
 
-    // The wrapper downloads the launcher's own Proton on first use; unpacking it needs xz.
+    // The wrapper downloads the launcher's own Proton on first use; unpacking it needs xz. With a
+    // Proton chosen in Labs (or BLIZZNUX_PROTON) nothing is downloaded: that folder must be usable.
     let xz = on_path("xz");
-    let (ok, detail) = match reports::own_proton() {
-        Some(_) => (true, "found (the launcher's own build)"),
-        None if xz => (true, "not downloaded yet; the launcher fetches its own build on first use"),
-        None => (false, "needs xz to unpack it, which was not found"),
+    let (ok, detail) = match (reports::custom_proton(), reports::own_proton()) {
+        (Some(dir), _) => match check_proton_dir(&dir.display().to_string()) {
+            Ok(()) => (true, "found (the Proton you chose in Labs)".to_string()),
+            Err(e) => (false, e),
+        },
+        (None, Some(_)) => (true, "found (the launcher's own build)".to_string()),
+        (None, None) if xz => (true, "not downloaded yet; the launcher fetches its own build on first use".to_string()),
+        (None, None) => (false, "needs xz to unpack it, which was not found".to_string()),
     };
     out.push(Check {
         name: "Proton".into(),
         ok,
-        detail: detail.into(),
+        detail,
         hint: match family {
             "arch" => "sudo pacman -S xz".into(),
             "fedora" => "sudo dnf install xz".into(),
@@ -469,7 +487,11 @@ fn readiness() -> Vec<Check> {
     out.push(Check {
         name: "Vulkan driver (32-bit)".into(),
         ok: vk32 || wow64,
-        detail: vk32_detail(vk32, wow64, &vendors),
+        detail: if direct && !vk32 && !wow64 {
+            format!("{}; running Proton directly has no container to supply 32-bit libraries, so they must come from your system (or turn on Wine WoW64 mode)", vk32_detail(vk32, wow64, &vendors))
+        } else {
+            vk32_detail(vk32, wow64, &vendors)
+        },
         hint: if in_flatpak { "flatpak install org.freedesktop.Platform.GL32.default and the GL32 extension matching your driver".into() } else if hint.is_empty() { pkg_hint("", family) } else { hint },
         blocking: false,
     });
@@ -823,6 +845,21 @@ const NET_DEBUG_JS: &str = r#"(function(){
   window.addEventListener('unhandledrejection', function(e){ log('rejection', '', location.pathname, '', String(e.reason && (e.reason.message || e.reason)).slice(0, 300)); });
 })();"#;
 
+/// A folder that can serve as the Proton to use: it exists and holds an executable file named
+/// `proton`. The error is what the user is shown.
+pub(crate) fn check_proton_dir(dir: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let d = Path::new(dir);
+    if !d.is_dir() {
+        return Err(format!("{dir} is not a folder"));
+    }
+    match fs::metadata(d.join("proton")) {
+        Ok(m) if m.is_file() && m.permissions().mode() & 0o111 != 0 => Ok(()),
+        Ok(m) if m.is_file() => Err(format!("{dir}/proton is not executable")),
+        _ => Err(format!("{dir} has no file named proton: choose the Proton folder itself")),
+    }
+}
+
 /// What the 32-bit Vulkan check says. Labs: Wine WoW64 mode runs 32-bit code on 64-bit
 /// drivers, so a missing 32-bit driver is not a problem while it is on.
 fn vk32_detail(found: bool, wow64: bool, vendors: &[&str]) -> String {
@@ -838,6 +875,23 @@ fn vk32_detail(found: bool, wow64: bool, vendors: &[&str]) -> String {
 #[cfg(test)]
 mod lab_tests {
     use super::*;
+
+    #[test]
+    fn a_proton_folder_needs_an_executable_proton_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("blizznux-protondir-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let d = dir.display().to_string();
+        assert!(check_proton_dir(&format!("{d}/nope")).unwrap_err().contains("not a folder"));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(check_proton_dir(&d).unwrap_err().contains("no file named proton"));
+        fs::write(dir.join("proton"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(dir.join("proton"), fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(check_proton_dir(&d).unwrap_err().contains("not executable"));
+        fs::set_permissions(dir.join("proton"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(check_proton_dir(&d), Ok(()));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_missing_32_bit_driver_is_not_needed_in_wow64_mode() {
