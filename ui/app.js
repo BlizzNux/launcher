@@ -509,6 +509,7 @@ async function checkBattlenet() {
 async function loadConfig() {
   const c = await invoke("read_config");
   $("#cfg-reports-auto").checked = c.REPORTS_AUTO === "1";
+  $("#cfg-lab-wow64").checked = c.LAB_WOW64 === "1";
   refreshAccount();
   const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
   off.checked = true;
@@ -516,7 +517,7 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0" } });
+    await invoke("write_config", { values: { OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0", LAB_WOW64: $("#cfg-lab-wow64").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -612,10 +613,11 @@ async function init() {
   window.__TAURI__.event.listen("game-closed-early", onGameClosedEarly);
   window.__TAURI__.event.listen("launch-progress", (e) => status(String(e.payload)));
   window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
-  window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome}).`); });
+  window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome})${p.lab ? " (Modified)" : ""}.`); });
   $("#site").addEventListener("load", onSiteLoaded);
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
   $("#cfg-share").addEventListener("change", saveConfig);
+  $("#cfg-lab-wow64").addEventListener("change", saveConfig);
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
     showLog(true);

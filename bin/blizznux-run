@@ -30,7 +30,7 @@ PROTON_SHA256=35e16eab636724e3ed7aa8e2dbc33eb8e102e0c63bbc28b5a39af544c75d5bd3
 PROTON_MB=332
 PROTON_DIR=$DATA_DIR/proton
 
-PREFIX=""; OFFLOAD=auto; GAME=""
+PREFIX=""; OFFLOAD=auto; GAME=""; LAB_WOW64=0
 
 usage() {
 	cat <<USAGE
@@ -79,7 +79,7 @@ load_config() {
 	[[ -f $CONFIG ]] || return 0
 	local k v
 	while IFS='=' read -r k v; do
-		case $k in PREFIX|OFFLOAD) printf -v "$k" '%s' "$v" ;; esac
+		case $k in PREFIX|OFFLOAD|LAB_WOW64) printf -v "$k" '%s' "$v" ;; esac
 	done < "$CONFIG"
 }
 
@@ -88,8 +88,8 @@ save_config() {
 	# The desktop app keeps its own keys (account, report settings) in the same file: carry them over.
 	# A Proton build chosen with an earlier version is dropped: the launcher's own is the only one now.
 	local keep=""
-	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD)=' "$CONFIG" || true)
-	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
+	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD|LAB_WOW64)=' "$CONFIG" || true)
+	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ $LAB_WOW64 != 1 ]] || printf 'LAB_WOW64=1\n'; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
 proton_sum_ok() { echo "$PROTON_SHA256  $1" | sha256sum -c --quiet - >/dev/null 2>&1; }
@@ -252,6 +252,11 @@ run_umu() {
 	local proton; proton=$(find_proton)
 	export WINEPREFIX=$PREFIX PROTONPATH=$proton GAMEID=${GAMEID:-umu-default} STORE=none PROTON_VERB=waitforexitandrun
 	gpu_env
+	# Labs (experimental, opt-in). BLIZZNUX_LAB tells the launcher which were on for this session.
+	if [[ $LAB_WOW64 == 1 ]]; then
+		export PROTON_USE_WOW64=1 BLIZZNUX_LAB=wow64
+		log "Labs: Wine WoW64 mode on (PROTON_USE_WOW64=1)"
+	fi
 	local inhibit=()
 	command -v systemd-inhibit >/dev/null && inhibit=(systemd-inhibit --what=idle:sleep --why="Battle.net is running")
 	log "proton: $proton"; log "prefix: $PREFIX"
