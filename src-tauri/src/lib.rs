@@ -390,7 +390,7 @@ fn readiness() -> Vec<Check> {
     // The wrapper downloads the launcher's own umu-launcher on first use; running it needs python3.
     let umu = umu_run();
     let python = on_path("python3");
-    let direct = load_config().get("LAB_DIRECT_PROTON" | "LAB_NO_XALIA" | "LAB_BNET_FPS").is_some_and(|v| v == "1");
+    let direct = load_config().get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1");
     out.push(Check {
         name: "umu-launcher".into(),
         ok: direct || umu.is_some() || python,
