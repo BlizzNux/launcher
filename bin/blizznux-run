@@ -279,6 +279,11 @@ labs_env() {
 		export PROTON_USE_WOW64=1
 		log "Labs: Wine WoW64 mode on (PROTON_USE_WOW64=1)"
 	fi
+	if [[ $LAB_WOW64 != 1 && ${PROTON_USE_WOW64:-} == 1 ]]; then
+		# Set by hand in the environment: the same mode, so reports must be marked Labs too.
+		labs+=(wow64)
+		log "Labs: Wine WoW64 mode on (PROTON_USE_WOW64=1 set in the environment)"
+	fi
 	[[ -z $(custom_proton) ]] || log "Labs: using the installed Proton $(custom_proton) ($(custom_proton_source))"
 	[[ $LAB_DIRECT_PROTON != 1 ]] || log "Labs: running Proton directly, without umu-launcher's container"
 	(( ${#labs[@]} )) || return 0
