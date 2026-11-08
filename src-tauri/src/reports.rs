@@ -1048,6 +1048,26 @@ fn lab_of_pid(pid: u32) -> Vec<String> {
     }
 }
 
+/// The Labs settings a report of this kind is about: the session's for run and launch reports.
+fn report_lab(kind: &str) -> Vec<String> {
+    match (kind, SESSION_LAB.lock().ok().and_then(|s| s.clone())) {
+        ("run" | "launch", Some(session)) => session,
+        _ => labs_in(&load_config()),
+    }
+}
+
+/// The once-a-day stamp for a build: a Labs session gets its own, so it and a normal success
+/// on the same day do not swallow each other. Without Labs the stamp is the plain one.
+fn stamp_for(kind: &str, build: &str, date: &str, lab: &[String]) -> String {
+    let mut stamp = format!("{kind}:{build}:{date}");
+    if !lab.is_empty() {
+        let mut keys = lab.to_vec();
+        keys.sort();
+        stamp.push_str(&format!(":lab={}", keys.join(",")));
+    }
+    stamp
+}
+
 /// Build the JSON body for a report; the UI shows it before sending. Off the window's thread:
 /// the system profile runs a few programs, and the window must not freeze meanwhile.
 #[tauri::command]
@@ -1074,10 +1094,7 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
         "system": system_profile(),
         "battlenet": battlenet_info(),
     });
-    let lab = match (kind.as_str(), SESSION_LAB.lock().ok().and_then(|s| s.clone())) {
-        ("run" | "launch", Some(session)) => session,
-        _ => labs_in(&load_config()),
-    };
+    let lab = report_lab(&kind);
     mark_lab(&mut body, &lab);
     if let Some(code) = game.as_deref().filter(|c| !c.is_empty()) {
         if let Some(g) = game_info(code) {
@@ -1404,7 +1421,7 @@ fn daily_stamp(kind: &str, game: Option<&str>, outcome: &str) -> Option<String> 
         ("run", Some(code)) => game_info(code).map(|g| format!("{}:{}", g.code, g.version)).unwrap_or_default(),
         _ => String::new(),
     };
-    let stamp = format!("{kind}:{build}:{}", &now_iso()[..10]);
+    let stamp = stamp_for(kind, &build, &now_iso()[..10], &report_lab(kind));
     let key = if kind == "launch" { "LAST_LAUNCH_OK" } else { "LAST_RUN_OK" };
     let c = load_config();
     if c.get(key).map_or(false, |v| v.split(';').any(|s| s == stamp)) {
@@ -1790,6 +1807,17 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_labs_session_has_its_own_daily_stamp() {
+        let plain = stamp_for("run", "wow:1.2", "2026-11-08", &[]);
+        assert_eq!(plain, "run:wow:1.2:2026-11-08");
+        let lab = stamp_for("run", "wow:1.2", "2026-11-08", &["wow64".to_string()]);
+        assert_eq!(lab, "run:wow:1.2:2026-11-08:lab=wow64");
+        assert_ne!(plain, lab);
+        let two = stamp_for("run", "b", "d", &["b".to_string(), "a".to_string()]);
+        assert_eq!(two, "run:b:d:lab=a,b");
+    }
 
     #[test]
     fn the_runtime_is_named_as_its_own_folder_records_it() {
