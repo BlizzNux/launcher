@@ -1,0 +1,10 @@
+TITLE,STORE,CODENAME,UMU_ID,COMMON ACRONYM,NOTE,EXE_STRINGS
+World of Warcraft,battlenet,WoW,umu-wow,wow,Launch via "Battle.net Launcher.exe" --exec="launch WoW",Wow.exe;WowClassic.exe
+Hearthstone,battlenet,WTCG,umu-hearthstone,hs,,Hearthstone.exe
+Heroes of the Storm,battlenet,Hero,umu-hots,hots,,HeroesOfTheStorm_x64.exe
+Overwatch 2,battlenet,Pro,umu-2357570,ow2,Steam appid 2357570,Overwatch.exe
+Diablo IV,battlenet,Fen,umu-2344520,d4,Steam appid 2344520,Diablo IV.exe
+Diablo III,battlenet,D3,umu-diablo3,d3,,Diablo III64.exe
+Diablo II: Resurrected,battlenet,OSI,umu-d2r,d2r,,D2R.exe
+StarCraft II,battlenet,S2,umu-sc2,sc2,,SC2_x64.exe
+Warcraft III: Reforged,battlenet,W3,umu-warcraft3,w3,,Warcraft III.exe
