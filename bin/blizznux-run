@@ -31,7 +31,7 @@ PROTON_SHA256=35e16eab636724e3ed7aa8e2dbc33eb8e102e0c63bbc28b5a39af544c75d5bd3
 PROTON_MB=332
 PROTON_DIR=$DATA_DIR/proton
 
-PREFIX=""; OFFLOAD=auto; GAME=""; LAB_WOW64=0; LAB_PROTON_DIR=""; LAB_DIRECT_PROTON=0
+PREFIX=""; OFFLOAD=auto; GAME=""; LAB_WOW64=0; LAB_PROTON_DIR=""; LAB_DIRECT_PROTON=0; LAB_NO_XALIA=0; LAB_BNET_FPS=0
 
 usage() {
 	cat <<USAGE
@@ -80,7 +80,7 @@ load_config() {
 	[[ -f $CONFIG ]] || return 0
 	local k v
 	while IFS='=' read -r k v; do
-		case $k in PREFIX|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON) printf -v "$k" '%s' "$v" ;; esac
+		case $k in PREFIX|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON|LAB_NO_XALIA|LAB_BNET_FPS) printf -v "$k" '%s' "$v" ;; esac
 	done < "$CONFIG"
 }
 
@@ -89,8 +89,8 @@ save_config() {
 	# The desktop app keeps its own keys (account, report settings) in the same file: carry them over.
 	# A Proton build chosen with an earlier version is dropped: the launcher's own is the only one now.
 	local keep=""
-	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON)=' "$CONFIG" || true)
-	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ $LAB_WOW64 != 1 ]] || printf 'LAB_WOW64=1\n'; [[ -z $LAB_PROTON_DIR ]] || printf 'LAB_PROTON_DIR=%s\n' "$LAB_PROTON_DIR"; [[ $LAB_DIRECT_PROTON != 1 ]] || printf 'LAB_DIRECT_PROTON=1\n'; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
+	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON|LAB_NO_XALIA|LAB_BNET_FPS)=' "$CONFIG" || true)
+	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ $LAB_WOW64 != 1 ]] || printf 'LAB_WOW64=1\n'; [[ -z $LAB_PROTON_DIR ]] || printf 'LAB_PROTON_DIR=%s\n' "$LAB_PROTON_DIR"; [[ $LAB_DIRECT_PROTON != 1 ]] || printf 'LAB_DIRECT_PROTON=1\n'; [[ $LAB_NO_XALIA != 1 ]] || printf 'LAB_NO_XALIA=1\n'; [[ $LAB_BNET_FPS != 1 ]] || printf 'LAB_BNET_FPS=1\n'; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
 proton_sum_ok() { echo "$PROTON_SHA256  $1" | sha256sum -c --quiet - >/dev/null 2>&1; }
@@ -269,6 +269,23 @@ find_umu() {
 	own_umu || { fetch_umu >&2; echo "$UMU_DIR/umu-run"; }   # callers read the path from stdout
 }
 
+# Adds the 15 FPS cap for Battle.net.exe to DXVK_CONFIG. A "[Exe.exe]" entry starts a section that
+# applies to that program only, so the cap goes last: into the final section when that is already
+# Battle.net.exe's (the hybrid-Hyprland one), else into a new one. The user's own settings stay.
+# Runs after gpu_env, whose Hyprland check needs the unchanged launcher default.
+bnet_fps_config() {
+	local cfg=${DXVK_CONFIG:-} last=""
+	cfg=${cfg%"${cfg##*[![:space:];]}"}   # trailing spaces and ; off
+	[[ $cfg =~ \[([^]]*)\][^[]*$ ]] && last=${BASH_REMATCH[1]}
+	if [[ $last == Battle.net.exe ]]; then
+		export DXVK_CONFIG="$cfg; dxgi.maxFrameRate = 15"
+	elif [[ -n $cfg ]]; then
+		export DXVK_CONFIG="$cfg; [Battle.net.exe]; dxgi.maxFrameRate = 15"
+	else
+		export DXVK_CONFIG="[Battle.net.exe]; dxgi.maxFrameRate = 15"
+	fi
+}
+
 # Exports BLIZZNUX_LAB, the Labs settings in effect (comma separated, sorted), and what they need.
 labs_env() {
 	local labs=()
@@ -284,11 +301,25 @@ labs_env() {
 		labs+=(wow64)
 		log "Labs: Wine WoW64 mode on (PROTON_USE_WOW64=1 set in the environment)"
 	fi
+	if [[ $LAB_NO_XALIA == 1 ]]; then
+		labs+=(noxalia)
+		export PROTON_USE_XALIA=0
+		log "Labs: Xalia off (PROTON_USE_XALIA=0)"
+	elif [[ ${PROTON_USE_XALIA:-} == 0 ]]; then
+		# Set by hand in the environment: the same thing, so reports must be marked Labs too.
+		labs+=(noxalia)
+		log "Labs: Xalia off (PROTON_USE_XALIA=0 set in the environment)"
+	fi
+	if [[ $LAB_BNET_FPS == 1 ]]; then
+		labs+=(bnetfps)
+		bnet_fps_config
+		log "Labs: Battle.net's window capped at 15 FPS (DXVK_CONFIG=$DXVK_CONFIG)"
+	fi
 	[[ -z $(custom_proton) ]] || log "Labs: using the installed Proton $(custom_proton) ($(custom_proton_source))"
 	[[ $LAB_DIRECT_PROTON != 1 ]] || log "Labs: running Proton directly, without umu-launcher's container"
 	(( ${#labs[@]} )) || return 0
-	local IFS=,
-	export BLIZZNUX_LAB="${labs[*]}"
+	BLIZZNUX_LAB=$(printf '%s\n' "${labs[@]}" | LC_ALL=C sort | paste -sd,)
+	export BLIZZNUX_LAB
 }
 
 # Labs: Proton without umu. Proton wants the prefix as a Steam "compat data" folder holding a pfx

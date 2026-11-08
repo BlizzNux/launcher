@@ -511,6 +511,8 @@ async function loadConfig() {
   $("#cfg-reports-auto").checked = c.REPORTS_AUTO === "1";
   $("#cfg-lab-wow64").checked = c.LAB_WOW64 === "1";
   $("#cfg-lab-direct").checked = c.LAB_DIRECT_PROTON === "1";
+  $("#cfg-lab-noxalia").checked = c.LAB_NO_XALIA === "1";
+  $("#cfg-lab-fps").checked = c.LAB_BNET_FPS === "1";
   $("#cfg-lab-proton").value = c.LAB_PROTON_DIR || "";
   const envProton = !!c.BLIZZNUX_PROTON_SET;
   $("#cfg-lab-proton").disabled = envProton;
@@ -532,7 +534,7 @@ async function saveProtonDir() {
 
 async function saveConfig() {
   try {
-    await invoke("write_config", { values: { OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0", LAB_WOW64: $("#cfg-lab-wow64").checked ? "1" : "0", LAB_DIRECT_PROTON: $("#cfg-lab-direct").checked ? "1" : "0" } });
+    await invoke("write_config", { values: { OFFLOAD: document.querySelector("input[name=offload]:checked").value, REPORTS_AUTO: $("#cfg-reports-auto").checked ? "1" : "0", REPORTS_SHARE: $("#cfg-share").checked ? "1" : "0", BUG_AUTO: $("#cfg-bug-auto").checked ? "1" : "0", LAB_WOW64: $("#cfg-lab-wow64").checked ? "1" : "0", LAB_DIRECT_PROTON: $("#cfg-lab-direct").checked ? "1" : "0", LAB_NO_XALIA: $("#cfg-lab-noxalia").checked ? "1" : "0", LAB_BNET_FPS: $("#cfg-lab-fps").checked ? "1" : "0" } });
     $("#cfg-status").textContent = "Saved.";
   } catch (e) { $("#cfg-status").textContent = String(e); }
   setTimeout(() => { $("#cfg-status").textContent = ""; }, 3000);
@@ -634,6 +636,8 @@ async function init() {
   $("#cfg-share").addEventListener("change", saveConfig);
   $("#cfg-lab-wow64").addEventListener("change", saveConfig);
   $("#cfg-lab-direct").addEventListener("change", saveConfig);
+  $("#cfg-lab-noxalia").addEventListener("change", saveConfig);
+  $("#cfg-lab-fps").addEventListener("change", saveConfig);
   $("#cfg-lab-proton").addEventListener("change", saveProtonDir);
   $("#do-install").onclick = async () => {
     $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";

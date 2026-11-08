@@ -88,6 +88,10 @@
       <p class="muted">Runs 32-bit Windows code without 32-bit Linux drivers (PROTON_USE_WOW64=1). Takes effect the next time Battle.net starts.</p>
       <label class="radio"><input type="checkbox" id="cfg-lab-direct"> Run Proton directly, without the Steam Runtime container</label>
       <p class="muted">Starts Proton itself instead of through umu-launcher's container. For systems where the container can't run your Proton (for example NixOS). Without the container, 32-bit Linux libraries are needed unless Wine WoW64 mode is on. Takes effect the next time Battle.net starts.</p>
+      <label class="radio"><input type="checkbox" id="cfg-lab-noxalia"> Turn off Xalia</label>
+      <p class="muted">Stops Proton's controller helper for app windows (PROTON_USE_XALIA=0). Saves CPU; a controller can't drive Battle.net's window with it off. Takes effect the next time Battle.net starts.</p>
+      <label class="radio"><input type="checkbox" id="cfg-lab-fps"> Cap the Battle.net window at 15 FPS</label>
+      <p class="muted">Limits Battle.net's own window to 15 frames per second to save power while it sits open. Games are not affected; scrolling in Battle.net looks less smooth. Takes effect the next time Battle.net starts.</p>
       <div class="field">
         <label class="field-name" for="cfg-lab-proton">Use an installed Proton</label>
         <input type="text" id="cfg-lab-proton" spellcheck="false" autocomplete="off" placeholder="/path/to/Proton folder">

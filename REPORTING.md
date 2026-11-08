@@ -61,12 +61,16 @@ local stub); the default is the URL above.
 }
 ```
 
-`lab` is an optional array of Labs keys (Settings > Labs, experimental opt-in settings). Current keys (sorted when several are on, e.g. `["direct","proton","wow64"]`):
+`lab` is an optional array of Labs keys (Settings > Labs, experimental opt-in settings). Current keys (sorted when several are on, e.g. `["bnetfps","direct","noxalia","proton","wow64"]`):
 - `"wow64"` = Wine WoW64 mode (`PROTON_USE_WOW64=1`).  A hand-set `PROTON_USE_WOW64=1` in the environment counts as this setting too.
 - `"proton"` = a Proton build already on the computer is used instead of the launcher's own (Labs
   folder, or the packager's `BLIZZNUX_PROTON`). `system.proton` then names the build actually used
   (its `version` file's build name, else its folder name).
 - `"direct"` = Proton is started directly, without umu-launcher's Steam Runtime container.
+- `"noxalia"` = Proton's Xalia controller helper is off (`PROTON_USE_XALIA=0`). A hand-set
+  `PROTON_USE_XALIA=0` in the environment counts as this setting too.
+- `"bnetfps"` = Battle.net's own window is capped at 15 frames per second (a `dxgi.maxFrameRate = 15`
+  entry for `Battle.net.exe` only, in `DXVK_CONFIG`). Games are not affected.
 
 On `run` and `launch` reports `lab` is the setting
 in effect for that session, captured when the Battle.net launch or game session started, so a report
