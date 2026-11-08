@@ -86,6 +86,14 @@
       <p class="muted">Experimental settings. They can break Battle.net or a game. Reports sent while a Labs setting is on are marked Modified and kept off the public Compatibility board.</p>
       <label class="radio"><input type="checkbox" id="cfg-lab-wow64"> Wine WoW64 mode</label>
       <p class="muted">Runs 32-bit Windows code without 32-bit Linux drivers (PROTON_USE_WOW64=1). Takes effect the next time Battle.net starts.</p>
+      <label class="radio"><input type="checkbox" id="cfg-lab-direct"> Run Proton directly, without the Steam Runtime container</label>
+      <p class="muted">Starts Proton itself instead of through umu-launcher's container. For systems where the container can't run your Proton (for example NixOS). Without the container, 32-bit Linux libraries are needed unless Wine WoW64 mode is on. Takes effect the next time Battle.net starts.</p>
+      <div class="field">
+        <label class="field-name" for="cfg-lab-proton">Use an installed Proton</label>
+        <input type="text" id="cfg-lab-proton" spellcheck="false" autocomplete="off" placeholder="/path/to/Proton folder">
+        <p class="muted">Folder of a Proton build already on this computer (it contains a file named proton). Leave empty to use BlizzNux's own Proton. <span id="cfg-lab-proton-env"></span></p>
+        <p id="cfg-lab-proton-status" class="muted" role="status"></p>
+      </div>
     </section>
 
     <section id="panel-report" class="panel-page">
