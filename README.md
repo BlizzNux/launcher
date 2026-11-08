@@ -31,6 +31,11 @@ Open the `.deb` or `.rpm` file to install it, then start **BlizzNux** from your 
 For the `.AppImage`, right-click it, open **Properties**, allow it to run as a program, then
 double-click it.
 
+### NixOS
+
+NixOS packaging is maintained by [@caniko](https://github.com/caniko), the project's NixOS
+maintainer. Problems that only happen on NixOS can go to them first.
+
 ## What works
 
 The games made by Blizzard run. Call of Duty does not, because its anti-cheat does not allow
