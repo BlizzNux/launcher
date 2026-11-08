@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Runs the real gpu_env, labs_env and bnet_fps_config from bin/blizznux-run and checks the
 # DXVK_CONFIG, PROTON_USE_XALIA and BLIZZNUX_LAB they leave behind.
+# shellcheck disable=SC2016
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# shellcheck disable=SC2016  # the bash -c programs are meant to expand in the child
 fails=0
 # run NAME EXPECTED_DXVK_CONFIG [VAR=value ...]: Labs "no Xalia" and "15 FPS" both on.
 run() {
