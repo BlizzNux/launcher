@@ -1035,6 +1035,9 @@ fn labs_in(config: &BTreeMap<String, String>) -> Vec<String> {
 /// setting too, whether or not the Labs toggle is on.
 fn labs_from(config: &BTreeMap<String, String>, env_proton: Option<&str>, env_wow64: Option<&str>) -> Vec<String> {
     let mut lab = Vec::new();
+    if config.get("LAB_BNET_FPS").is_some_and(|v| v == "1") {
+        lab.push("bnetfps".to_string());
+    }
     if config.get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1") {
         lab.push("direct".to_string());
     }
@@ -2096,6 +2099,20 @@ mod tests {
         c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
         c.insert("LAB_PROTON_DIR".to_string(), "/opt/p".to_string());
         assert_eq!(labs_from(&c, None, None), ["direct", "proton", "wow64"]);
+    }
+
+    #[test]
+    fn labs_in_knows_the_fps_cap_and_sorts_all_four() {
+        let mut c = BTreeMap::new();
+        c.insert("LAB_BNET_FPS".to_string(), "1".to_string());
+        assert_eq!(labs_from(&c, None, None), ["bnetfps"]);
+        c.insert("LAB_WOW64".to_string(), "1".to_string());
+        c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
+        c.insert("LAB_PROTON_DIR".to_string(), "/opt/p".to_string());
+        assert_eq!(labs_from(&c, None, None), ["bnetfps", "direct", "proton", "wow64"]);
+        // The controller setting is not a Labs key.
+        c.insert("BNET_CONTROLLER".to_string(), "1".to_string());
+        assert_eq!(labs_from(&c, None, None), ["bnetfps", "direct", "proton", "wow64"]);
     }
 
     #[test]

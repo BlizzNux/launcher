@@ -29,7 +29,7 @@ jobs:
 
       - name: Shell scripts parse
         run: |
-          for f in bin/blizznux-run scripts/release.sh scripts/container-build.sh scripts/pin-watch.sh install.sh flatpak/build.sh; do
+          for f in bin/blizznux-run scripts/release.sh scripts/container-build.sh scripts/pin-watch.sh scripts/test-labs-env.sh install.sh flatpak/build.sh; do
             bash -n "$f"
           done
 
@@ -43,6 +43,9 @@ jobs:
             CACHE_DIR=$(mktemp -d)
             for OFFLOAD in auto off on; do gpu_env; done
             echo ok'
+
+      - name: Labs environment (DXVK_CONFIG, Xalia, BLIZZNUX_LAB)
+        run: scripts/test-labs-env.sh
 
       - name: Unit tests
         working-directory: src-tauri
