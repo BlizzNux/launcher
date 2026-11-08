@@ -1028,10 +1028,12 @@ impl BuildError {
 
 /// The Labs settings that are on, as the keys the site knows them by (sorted).
 fn labs_in(config: &BTreeMap<String, String>) -> Vec<String> {
-    labs_from(config, std::env::var("BLIZZNUX_PROTON").ok().as_deref())
+    labs_from(config, std::env::var("BLIZZNUX_PROTON").ok().as_deref(), std::env::var("PROTON_USE_WOW64").ok().as_deref())
 }
 
-fn labs_from(config: &BTreeMap<String, String>, env_proton: Option<&str>) -> Vec<String> {
+/// `env_wow64` is PROTON_USE_WOW64 from the environment: set to 1 by hand it is the wow64 Labs
+/// setting too, whether or not the Labs toggle is on.
+fn labs_from(config: &BTreeMap<String, String>, env_proton: Option<&str>, env_wow64: Option<&str>) -> Vec<String> {
     let mut lab = Vec::new();
     if config.get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1") {
         lab.push("direct".to_string());
@@ -1039,7 +1041,7 @@ fn labs_from(config: &BTreeMap<String, String>, env_proton: Option<&str>) -> Vec
     if custom_proton_from(config, env_proton).is_some() {
         lab.push("proton".to_string());
     }
-    if config.get("LAB_WOW64").is_some_and(|v| v == "1") {
+    if config.get("LAB_WOW64").is_some_and(|v| v == "1") || env_wow64 == Some("1") {
         lab.push("wow64".to_string());
     }
     lab
@@ -2080,20 +2082,32 @@ mod tests {
     #[test]
     fn labs_in_knows_each_key_and_sorts_them() {
         let mut c = BTreeMap::new();
-        assert!(labs_from(&c, None).is_empty());
+        assert!(labs_from(&c, None, None).is_empty());
         c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
-        assert_eq!(labs_from(&c, None), ["direct"]);
+        assert_eq!(labs_from(&c, None, None), ["direct"]);
         c.insert("LAB_DIRECT_PROTON".to_string(), "0".to_string());
         c.insert("LAB_PROTON_DIR".to_string(), "/opt/proton/".to_string());
-        assert_eq!(labs_from(&c, None), ["proton"]);
+        assert_eq!(labs_from(&c, None, None), ["proton"]);
         c.insert("LAB_PROTON_DIR".to_string(), "".to_string());
-        assert!(labs_from(&c, None).is_empty());
-        assert_eq!(labs_from(&c, Some("/nix/store/x")), ["proton"]);
-        assert!(labs_from(&c, Some("")).is_empty());
+        assert!(labs_from(&c, None, None).is_empty());
+        assert_eq!(labs_from(&c, Some("/nix/store/x"), None), ["proton"]);
+        assert!(labs_from(&c, Some(""), None).is_empty());
         c.insert("LAB_WOW64".to_string(), "1".to_string());
         c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
         c.insert("LAB_PROTON_DIR".to_string(), "/opt/p".to_string());
-        assert_eq!(labs_from(&c, None), ["direct", "proton", "wow64"]);
+        assert_eq!(labs_from(&c, None, None), ["direct", "proton", "wow64"]);
+    }
+
+    #[test]
+    fn a_hand_set_proton_use_wow64_counts_as_wow64() {
+        let mut c = BTreeMap::new();
+        assert_eq!(labs_from(&c, None, Some("1")), ["wow64"]);
+        assert!(labs_from(&c, None, Some("0")).is_empty());
+        assert!(labs_from(&c, None, Some("")).is_empty());
+        assert!(labs_from(&c, None, None).is_empty());
+        c.insert("LAB_WOW64".to_string(), "1".to_string());
+        c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
+        assert_eq!(labs_from(&c, None, Some("1")), ["direct", "wow64"]);
     }
 
     #[test]
