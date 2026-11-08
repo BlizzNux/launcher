@@ -2054,6 +2054,7 @@ mod tests {
             report: None,
             refused_by: refused_by.map(String::from),
             needs_login,
+            lab: Vec::new(),
         }
     }
 
