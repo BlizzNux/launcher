@@ -31,7 +31,7 @@ PROTON_SHA256=35e16eab636724e3ed7aa8e2dbc33eb8e102e0c63bbc28b5a39af544c75d5bd3
 PROTON_MB=332
 PROTON_DIR=$DATA_DIR/proton
 
-PREFIX=""; OFFLOAD=auto; GAME=""; LAB_WOW64=0; LAB_PROTON_DIR=""; LAB_DIRECT_PROTON=0; BNET_CONTROLLER=0; LAB_BNET_FPS=0
+PREFIX=""; OFFLOAD=auto; GAME=""; LAB_WOW64=0; LAB_PROTON_DIR=""; LAB_DIRECT_PROTON=0; LAB_BNET_FPS=0
 
 usage() {
 	cat <<USAGE
@@ -80,7 +80,7 @@ load_config() {
 	[[ -f $CONFIG ]] || return 0
 	local k v
 	while IFS='=' read -r k v; do
-		case $k in PREFIX|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON|BNET_CONTROLLER|LAB_BNET_FPS) printf -v "$k" '%s' "$v" ;; esac
+		case $k in PREFIX|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON|LAB_BNET_FPS) printf -v "$k" '%s' "$v" ;; esac
 	done < "$CONFIG"
 }
 
@@ -90,7 +90,7 @@ save_config() {
 	# A Proton build chosen with an earlier version is dropped: the launcher's own is the only one now.
 	local keep=""
 	[[ -f $CONFIG ]] && keep=$(grep -vE '^(PREFIX|PROTON|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON|BNET_CONTROLLER|LAB_BNET_FPS)=' "$CONFIG" || true)
-	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ $LAB_WOW64 != 1 ]] || printf 'LAB_WOW64=1\n'; [[ -z $LAB_PROTON_DIR ]] || printf 'LAB_PROTON_DIR=%s\n' "$LAB_PROTON_DIR"; [[ $LAB_DIRECT_PROTON != 1 ]] || printf 'LAB_DIRECT_PROTON=1\n'; [[ $BNET_CONTROLLER != 1 ]] || printf 'BNET_CONTROLLER=1\n'; [[ $LAB_BNET_FPS != 1 ]] || printf 'LAB_BNET_FPS=1\n'; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
+	{ printf 'PREFIX=%s\nOFFLOAD=%s\n' "$PREFIX" "$OFFLOAD"; [[ $LAB_WOW64 != 1 ]] || printf 'LAB_WOW64=1\n'; [[ -z $LAB_PROTON_DIR ]] || printf 'LAB_PROTON_DIR=%s\n' "$LAB_PROTON_DIR"; [[ $LAB_DIRECT_PROTON != 1 ]] || printf 'LAB_DIRECT_PROTON=1\n'; [[ $LAB_BNET_FPS != 1 ]] || printf 'LAB_BNET_FPS=1\n'; [[ -z $keep ]] || printf '%s\n' "$keep"; } > "$CONFIG"
 }
 
 proton_sum_ok() { echo "$PROTON_SHA256  $1" | sha256sum -c --quiet - >/dev/null 2>&1; }
@@ -286,14 +286,13 @@ bnet_fps_config() {
 	fi
 }
 
-# Xalia, Proton's controller helper for app windows, is off unless the user turned on controller
-# navigation in Battle.net's window: it costs memory and CPU and most people use a mouse and keyboard.
-# A PROTON_USE_XALIA already set in the environment is never overridden. Not a Labs setting.
+# Xalia, Proton's controller helper for app windows, is always off: games read controllers natively
+# through Proton, Xalia only drives Battle.net's own window (it wasn't shown to help there) and it costs
+# memory and CPU. A PROTON_USE_XALIA already set in the environment (PROTON_USE_XALIA=1) is never
+# overridden: that is the escape hatch. Not a Labs setting. An old BNET_CONTROLLER=1 in the config is ignored.
 xalia_env() {
 	if [[ -n ${PROTON_USE_XALIA+x} ]]; then
 		log "Xalia: PROTON_USE_XALIA=$PROTON_USE_XALIA set in the environment, left as is"
-	elif [[ $BNET_CONTROLLER == 1 ]]; then
-		log "Xalia: on (controller navigation in Battle.net's window)"
 	else
 		export PROTON_USE_XALIA=0
 	fi
