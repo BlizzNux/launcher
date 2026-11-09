@@ -37,13 +37,29 @@ fn config_path() -> PathBuf {
 }
 
 /// umu-run: the launcher's own copy, which the wrapper downloads into the data folder on first
-/// use; the Flatpak carries the same release inside. A umu-launcher of the system is not used.
+/// use; the Flatpak carries the same release inside. A umu-launcher of the system is not used,
+/// unless the packager points BLIZZNUX_UMU at it (not in the app; it wins).
 pub(crate) fn umu_run() -> Option<PathBuf> {
+    if let Some(p) = packaged_umu() {
+        return Some(p).filter(|f| executable_file(f));
+    }
     let bundled = PathBuf::from("/app/bin/umu-run");
     if std::env::var_os("FLATPAK_ID").is_some() && bundled.is_file() {
         return Some(bundled);
     }
     Some(own_umu()).filter(|f| f.is_file())
+}
+
+fn packaged_umu() -> Option<PathBuf> {
+    std::env::var("BLIZZNUX_UMU").ok().filter(|v| !v.trim().is_empty()).map(PathBuf::from)
+}
+
+/// The wrapper refuses a BLIZZNUX_UMU it cannot run (bash `-f` and `-x`), so the readiness
+/// check must too: the same access test, for this user.
+fn executable_file(p: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return false };
+    p.is_file() && unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) } == 0
 }
 
 fn own_umu() -> PathBuf {
@@ -391,12 +407,15 @@ fn readiness() -> Vec<Check> {
     let umu = umu_run();
     let python = on_path("python3");
     let direct = load_config().get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1");
+    let packaged = packaged_umu().is_some();
     out.push(Check {
         name: "umu-launcher".into(),
-        ok: direct || umu.is_some() || python,
+        ok: direct || umu.is_some() || (python && !packaged),
         detail: match &umu {
             _ if direct => "not needed while Labs: running Proton directly is on".into(),
+            Some(_) if packaged => "found (set by BLIZZNUX_UMU)".into(),
             Some(_) => "found (the launcher's own copy)".into(),
+            None if packaged => "BLIZZNUX_UMU is set, but it is not an executable file".into(),
             None if python => "not downloaded yet; the launcher fetches its own copy on first use".into(),
             None => "needs python3, which was not found".into(),
         },
@@ -441,8 +460,14 @@ fn readiness() -> Vec<Check> {
         blocking: true,
     });
 
-    // 64-bit Vulkan: any ICD manifest at all.
-    let icd_dirs = ["/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d", "/usr/local/share/vulkan/icd.d"];
+    // 64-bit Vulkan: any ICD manifest at all. NixOS keeps them under /run/opengl-driver{,-32}.
+    let icd_dirs = [
+        "/usr/share/vulkan/icd.d",
+        "/etc/vulkan/icd.d",
+        "/usr/local/share/vulkan/icd.d",
+        "/run/opengl-driver/share/vulkan/icd.d",
+        "/run/opengl-driver-32/share/vulkan/icd.d",
+    ];
     let mut icds: Vec<String> = Vec::new();
     for d in icd_dirs {
         if let Ok(rd) = fs::read_dir(d) {
@@ -471,6 +496,7 @@ fn readiness() -> Vec<Check> {
         "/usr/lib32/libGLX_nvidia.so.0",
         "/usr/lib/i386-linux-gnu/libGLX_nvidia.so.0",
         "/usr/lib/libGLX_nvidia.so.0",
+        "/run/opengl-driver-32/lib/libGLX_nvidia.so.0",
     ]
     .iter()
     .any(|p| is_elf32(std::path::Path::new(p)));
@@ -890,6 +916,26 @@ mod lab_tests {
         assert!(check_proton_dir(&d).unwrap_err().contains("not executable"));
         fs::set_permissions(dir.join("proton"), fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(check_proton_dir(&d), Ok(()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_packaged_umu_run_must_be_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("blizznux-umu-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let umu = dir.join("umu-run");
+        assert!(!executable_file(&umu));
+        fs::write(&umu, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&umu, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!executable_file(&umu));
+        // Executable for others only: not for its owner, the user running this.
+        fs::set_permissions(&umu, fs::Permissions::from_mode(0o641)).unwrap();
+        assert!(!executable_file(&umu));
+        fs::set_permissions(&umu, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(executable_file(&umu));
+        assert!(!executable_file(&dir));
         let _ = fs::remove_dir_all(&dir);
     }
 

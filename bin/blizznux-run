@@ -15,8 +15,9 @@ INSTALLER_URL='https://www.battle.net/download/getInstallerForGame?os=win&gamePr
 LAUNCHER_REL='drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe'
 LAUNCHER_WIN='C:\Program Files (x86)\Battle.net\Battle.net Launcher.exe'
 # The umu-launcher release every install runs, kept in the launcher's data folder. A umu-launcher of the
-# system is not used: every distribution has another version, or none. Change the version and the checksum
-# together, here and in the Flatpak manifest, which carries the same release.
+# system is not used: every distribution has another version, or none. A packager can set BLIZZNUX_UMU to
+# the umu-run of their package instead. Change the version and the checksum together, here and in the
+# Flatpak manifest, which carries the same release.
 UMU_VERSION=1.4.4
 UMU_URL=https://github.com/Open-Wine-Components/umu-launcher/releases/download/$UMU_VERSION/umu-launcher-$UMU_VERSION-zipapp.tar
 UMU_SHA256=eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851
@@ -193,7 +194,7 @@ hybrid_display_gpu() {
 	0x8086) name=Intel icd=intel ;;
 	*) return 0 ;;
 	esac
-	for f in ${BLIZZNUX_ICD_DIRS:-/usr/share/vulkan/icd.d /etc/vulkan/icd.d /usr/local/share/vulkan/icd.d /usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d}; do
+	for f in ${BLIZZNUX_ICD_DIRS:-/usr/share/vulkan/icd.d /etc/vulkan/icd.d /usr/local/share/vulkan/icd.d /usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d /run/opengl-driver/share/vulkan/icd.d}; do
 		compgen -G "$f/${icd}_icd*.json" >/dev/null && { echo "$name"; return 0; }
 	done
 	return 0
@@ -257,9 +258,13 @@ fetch_umu() {
 	rm -rf "$tmp"
 }
 
-# The launcher's own umu-run if it is there: the one inside the Flatpak, else the downloaded release
-# of the version above.
+# The launcher's own umu-run if it is there: the packager's BLIZZNUX_UMU (not in the app), the one
+# inside the Flatpak, else the downloaded release of the version above.
 own_umu() {
+	if [[ -n ${BLIZZNUX_UMU:-} ]]; then
+		[[ -f $BLIZZNUX_UMU && -x $BLIZZNUX_UMU ]] || die "BLIZZNUX_UMU ($BLIZZNUX_UMU) is not an executable file"
+		echo "$BLIZZNUX_UMU"; return
+	fi
 	if [[ -n ${FLATPAK_ID:-} && -x /app/bin/umu-run ]]; then echo /app/bin/umu-run; return; fi
 	[[ -x $UMU_DIR/umu-run && $(cat "$UMU_DIR/version" 2>/dev/null) == "$UMU_VERSION" ]] && echo "$UMU_DIR/umu-run"
 }
