@@ -2110,9 +2110,6 @@ mod tests {
         c.insert("LAB_DIRECT_PROTON".to_string(), "1".to_string());
         c.insert("LAB_PROTON_DIR".to_string(), "/opt/p".to_string());
         assert_eq!(labs_from(&c, None, None), ["bnetfps", "direct", "proton", "wow64"]);
-        // The controller setting is not a Labs key.
-        c.insert("BNET_CONTROLLER".to_string(), "1".to_string());
-        assert_eq!(labs_from(&c, None, None), ["bnetfps", "direct", "proton", "wow64"]);
     }
 
     #[test]

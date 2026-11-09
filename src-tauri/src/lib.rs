@@ -181,7 +181,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK" | "LAB_WOW64" | "LAB_PROTON_DIR" | "LAB_DIRECT_PROTON" | "BNET_CONTROLLER" | "LAB_BNET_FPS") {
+                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK" | "LAB_WOW64" | "LAB_PROTON_DIR" | "LAB_DIRECT_PROTON" | "LAB_BNET_FPS") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -210,7 +210,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("PREFIX").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
-    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64", "LAB_PROTON_DIR", "LAB_DIRECT_PROTON", "BNET_CONTROLLER", "LAB_BNET_FPS"] {
+    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64", "LAB_PROTON_DIR", "LAB_DIRECT_PROTON", "LAB_BNET_FPS"] {
         if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
@@ -234,7 +234,7 @@ fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
                 check_proton_dir(&dir)?;
             }
             current.insert(k, dir);
-        } else if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO" | "LAB_WOW64" | "LAB_DIRECT_PROTON" | "BNET_CONTROLLER" | "LAB_BNET_FPS") {
+        } else if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO" | "LAB_WOW64" | "LAB_DIRECT_PROTON" | "LAB_BNET_FPS") {
             current.insert(k, v.trim().to_string());
         }
     }
