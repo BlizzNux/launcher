@@ -133,6 +133,8 @@ fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
     if reports::battlenet_running() {
         return Err("Battle.net is already running.".into());
     }
+    // Held until watch_launch finishes; dropped on any early return below.
+    let guard = reports::begin_launch().ok_or("Battle.net is still starting. Give it a moment.")?;
     let script = script_path(&app).ok_or("blizznux-run not found (run install.sh)")?;
     let mut cmd = host_command(&script);
     if let Some(code) = game.as_deref().filter(|g| !g.is_empty()) {
@@ -151,7 +153,7 @@ fn launch(app: AppHandle, game: Option<String>) -> Result<String, String> {
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    reports::watch_launch(app.clone());
+    reports::watch_launch(app.clone(), guard);
     Ok(script.display().to_string())
 }
 
