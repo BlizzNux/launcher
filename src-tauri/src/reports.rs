@@ -1507,10 +1507,38 @@ fn auto_report(app: &AppHandle, kind: &str, game: Option<String>, outcome: &str,
     });
 }
 
+/// True from the moment Play is accepted until `watch_launch` finishes. For the first stretch of
+/// a start (Proton/umu setup, up to two minutes) no Battle.net process exists yet, so
+/// `battlenet_running` alone would let a second click start a second launch.
+static LAUNCH_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Holds a flag while alive and clears it on drop, so a panic or an early return can never leave
+/// it stuck on.
+pub struct LaunchGuard(&'static std::sync::atomic::AtomicBool);
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn take_flag(flag: &'static std::sync::atomic::AtomicBool) -> Option<LaunchGuard> {
+    use std::sync::atomic::Ordering::SeqCst;
+    // compare_exchange so two fast clicks cannot both pass.
+    flag.compare_exchange(false, true, SeqCst, SeqCst).ok().map(|_| LaunchGuard(flag))
+}
+
+/// Claim the right to start Battle.net, or None while another start is still pending.
+pub fn begin_launch() -> Option<LaunchGuard> {
+    take_flag(&LAUNCH_PENDING)
+}
+
 /// After Launch: did the Battle.net client actually come up? Reports ok/failed when sharing.
-pub fn watch_launch(app: AppHandle) {
+/// Takes the guard from `begin_launch` and keeps it until the start has succeeded or timed out.
+pub fn watch_launch(app: AppHandle, guard: LaunchGuard) {
     set_session_lab(labs_in(&load_config()));
     std::thread::spawn(move || {
+        let _guard = guard;
         let mut start = Instant::now();
         let mut ok = false;
         while start.elapsed() < Duration::from_secs(120) {
@@ -1847,6 +1875,26 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_launch_is_refused_until_the_first_guard_drops() {
+        static FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let first = take_flag(&FLAG).expect("first start is allowed");
+        assert!(take_flag(&FLAG).is_none());
+        drop(first);
+        assert!(take_flag(&FLAG).is_some());
+    }
+
+    #[test]
+    fn a_panicking_start_does_not_leave_the_flag_on() {
+        static FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let _ = std::thread::spawn(|| {
+            let _g = take_flag(&FLAG).unwrap();
+            panic!("start died");
+        })
+        .join();
+        assert!(take_flag(&FLAG).is_some());
+    }
 
     #[test]
     fn a_labs_session_has_its_own_daily_stamp() {
