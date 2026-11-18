@@ -979,11 +979,105 @@ pub(crate) fn condense_log(text: &str) -> Vec<String> {
     out
 }
 
-/// The end of the launcher log as attached to a report: folded, then cut, then scrubbed.
+/// A session with fewer lines than this gets the one before it as context.
+const SHORT_SESSION: usize = 40;
+
+/// Each start of the launcher writes `=== <time> ===` to the log.
+fn is_header(line: &str) -> bool {
+    let t = line.trim();
+    t.len() > 6 && t.starts_with("=== ") && t.ends_with(" ===")
+}
+
+/// The part of the log that matters: from the last start header to the end, plus the session
+/// before it when the last one is short. A log with no header is returned as it is.
+pub(crate) fn recent_sessions(log: &str) -> String {
+    let lines: Vec<&str> = log.lines().collect();
+    let heads: Vec<usize> = (0..lines.len()).filter(|&i| is_header(lines[i])).collect();
+    let Some(&last) = heads.last() else { return log.to_string() };
+    let filled = |from: usize, to: usize| lines[from..to].iter().filter(|l| !l.trim().is_empty()).count();
+    let from = if filled(last, lines.len()) < SHORT_SESSION && heads.len() > 1 { heads[heads.len() - 2] } else { last };
+    lines[from..].join("\n")
+}
+
+/// The end of the launcher log as attached to a report: the last session (and the one before
+/// it when short), folded, then cut, then scrubbed.
 fn log_tail(max_lines: usize) -> String {
     let log = fs::read_to_string(crate::log_path()).unwrap_or_default();
-    let lines = condense_log(&log);
+    let lines = condense_log(&recent_sessions(&log));
     scrub(&lines[lines.len().saturating_sub(max_lines)..].join("\n"))
+}
+
+/// How far back a crash file may be dated when the session's start is not known, and how much
+/// of one rides along.
+const CRASH_WINDOW_SECS: u64 = 6 * 3600;
+const CRASH_LINES: usize = 150;
+const CRASH_BYTES: usize = 12 * 1024;
+
+/// Takes the Windows user and computer name out of a crash file: lines that state them, and the
+/// user folder in any path.
+pub(crate) fn redact_crash(text: &str) -> String {
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| {
+            let key = l.split_once(':').map(|(k, _)| k.trim().to_ascii_lowercase()).unwrap_or_default();
+            if matches!(key.as_str(), "computer" | "computer name" | "computername" | "user" | "user name" | "username" | "machine" | "host" | "host name") {
+                return format!("{}: (removed)", l.split_once(':').map(|(k, _)| k.trim()).unwrap_or_default());
+            }
+            let mut out = String::with_capacity(l.len());
+            let mut rest = l;
+            while let Some(i) = rest.to_ascii_lowercase().find("users\\") {
+                let after = i + "users\\".len();
+                out.push_str(&rest[..after]);
+                let name_end = rest[after..].find(|c: char| c == '\\' || c == '/' || c.is_whitespace() || c == '"' || c == '\'').map_or(rest.len(), |n| after + n);
+                out.push('~');
+                rest = &rest[name_end..];
+            }
+            out.push_str(rest);
+            out
+        })
+        .collect();
+    lines.join("\n")
+}
+
+/// The last CRASH_LINES lines and CRASH_BYTES bytes of a crash file, redacted and scrubbed.
+pub(crate) fn crash_excerpt(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = scrub(&redact_crash(&lines[lines.len().saturating_sub(CRASH_LINES)..].join("\n")));
+    if out.len() > CRASH_BYTES {
+        let mut cut = out.len() - CRASH_BYTES;
+        while !out.is_char_boundary(cut) {
+            cut += 1;
+        }
+        out = out[cut..].to_string();
+    }
+    out
+}
+
+/// The newest `.txt` in a WoW `Errors` folder that is no older than `max_age` seconds at `now`.
+pub(crate) fn newest_crash(errors: &Path, now: SystemTime, max_age: u64) -> Option<PathBuf> {
+    fs::read_dir(errors)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("txt")))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .filter(|(m, _)| now.duration_since(*m).map_or(true, |age| age.as_secs() <= max_age))
+        .max_by_key(|(m, _)| *m)
+        .map(|(_, p)| p)
+}
+
+/// WoW's own crash report for the game in a report body, when one is fresh.
+fn crash_file(body: &serde_json::Value) -> Option<String> {
+    let code = body["game"]["code"].as_str()?;
+    if code != "WoW" {
+        return None;
+    }
+    let flavor = body["game"]["flavor"].as_str().filter(|f| !f.is_empty()).unwrap_or("_retail_");
+    let g = game_by_code(code)?;
+    let errors = game_root(&current_prefix(), g).join(flavor).join("Errors");
+    let path = newest_crash(&errors, SystemTime::now(), CRASH_WINDOW_SECS)?;
+    let text = String::from_utf8_lossy(&fs::read(path).ok()?).to_string();
+    let out = crash_excerpt(&text);
+    (!out.trim().is_empty()).then_some(out)
 }
 
 fn now_secs() -> u64 {
@@ -1168,11 +1262,17 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
         }
         if is_problem("run", Some(&o)) {
             body["log"] = serde_json::Value::String(log_tail(200));
+            if let Some(c) = crash_file(&body) {
+                body["crash"] = serde_json::Value::String(c);
+            }
         }
         body["outcome"] = serde_json::Value::String(o);
         body["comment"] = serde_json::Value::String(scrub(&comment.unwrap_or_default()).chars().take(2000).collect());
     } else {
         body["log"] = serde_json::Value::String(log_tail(200));
+        if let Some(c) = crash_file(&body) {
+            body["crash"] = serde_json::Value::String(c);
+        }
         if let Some(c) = comment.filter(|c| !c.is_empty()) {
             body["comment"] = serde_json::Value::String(scrub(&c).chars().take(2000).collect());
         }
@@ -1874,6 +1974,62 @@ fn session_end(secs: u64) -> (&'static str, bool) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_report_log_starts_at_the_last_session() {
+        let long: String = (0..50).map(|i| format!("line {i}\n")).collect();
+        let log = format!("=== 2026-11-01T10:00:00-05:00 ===\nold\n\n=== 2026-11-02T10:00:00-05:00 ===\n{long}");
+        let got = recent_sessions(&log);
+        assert!(got.starts_with("=== 2026-11-02"));
+        assert!(!got.contains("old"));
+        assert!(got.ends_with("line 49"));
+    }
+
+    #[test]
+    fn a_short_last_session_brings_the_one_before() {
+        let log = "=== a ===\nfirst\n=== b ===\nsecond\n=== c ===\nthird\n";
+        let got = recent_sessions(log);
+        assert!(got.starts_with("=== b ==="));
+        assert!(got.contains("second") && got.contains("third") && !got.contains("first"));
+    }
+
+    #[test]
+    fn a_log_without_headers_or_with_one_session_is_whole() {
+        assert_eq!(recent_sessions("just\nlines"), "just\nlines");
+        let one = "=== a ===\nonly\n";
+        assert!(recent_sessions(one).contains("only"));
+    }
+
+    #[test]
+    fn a_crash_file_loses_the_user_and_computer_name() {
+        let text = "Exe: C:\\Users\\Jane\\wow.exe\nComputer: DESKTOP-ABC\nUser: Jane\nException: ACCESS_VIOLATION";
+        let got = redact_crash(text);
+        assert!(!got.contains("Jane") && !got.contains("DESKTOP-ABC"));
+        assert!(got.contains("Users\\~\\wow.exe") && got.contains("ACCESS_VIOLATION"));
+    }
+
+    #[test]
+    fn a_crash_excerpt_is_capped() {
+        let text: String = (0..1000).map(|i| format!("frame {i}\n")).collect();
+        let got = crash_excerpt(&text);
+        assert_eq!(got.lines().count(), CRASH_LINES);
+        assert!(got.ends_with("frame 999"));
+        assert!(crash_excerpt(&"x".repeat(50_000)).len() <= CRASH_BYTES);
+    }
+
+    #[test]
+    fn only_a_fresh_text_crash_file_is_picked() {
+        let dir = std::env::temp_dir().join(format!("blizznux-crash-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.dmp"), "bin").unwrap();
+        assert!(newest_crash(&dir, SystemTime::now(), 3600).is_none());
+        fs::write(dir.join("b.txt"), "crash").unwrap();
+        assert_eq!(newest_crash(&dir, SystemTime::now(), 3600), Some(dir.join("b.txt")));
+        let later = SystemTime::now() + Duration::from_secs(7200);
+        assert!(newest_crash(&dir, later, 3600).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     #[test]
