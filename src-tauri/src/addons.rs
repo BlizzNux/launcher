@@ -418,10 +418,10 @@ mod tests {
     }
 
     #[test]
-    fn wow_forever_is_treated_as_era_everywhere() {
+    fn wow_forever_takes_era_builds_and_wowups_forever_type() {
         // Forever runs Wow.exe, so the exe alone would say retail.
         assert_eq!(flavor_family("_forever_", "Wow.exe"), "era");
-        assert_eq!(super::wowup_client_type("_forever_", "Wow.exe"), 6);
+        assert_eq!(super::wowup_client_type("_forever_", "Wow.exe"), 10);
         assert_eq!(flavor_label("_forever_"), "Forever");
         // Unchanged neighbors.
         assert_eq!(flavor_family("_retail_", "Wow.exe"), "retail");
@@ -442,9 +442,24 @@ mod tests {
         assert_eq!(list[0]["label"], "Retail");
         assert_eq!(list[1]["label"], "BlizzNux", "entries the user made stay as they are");
         assert_eq!(list[2]["label"], "Forever");
-        assert_eq!(list[2]["clientType"], 6);
+        assert_eq!(list[2]["clientType"], 10);
         assert_eq!(list[2]["selected"], false);
         assert_eq!(list.len(), 3);
+    }
+
+    #[test]
+    fn old_forever_entries_move_to_wowups_forever_type() {
+        let mut list = vec![
+            serde_json::json!({"id": "blizznux-forever", "label": "Forever", "clientType": 6, "location": "/w/_forever_/Wow.exe"}),
+            serde_json::json!({"id": "mine", "label": "Mine", "clientType": 6, "location": "/x/_forever_/Wow.exe"}),
+            serde_json::json!({"id": "blizznux-classic_era", "label": "Classic Era", "clientType": 6, "location": "/w/_classic_era_/WowClassic.exe"}),
+        ];
+        assert!(!super::merge_wowup_install(&mut list, "_forever_", "Wow.exe", "Forever", "/w/_forever_/Wow.exe"));
+        assert!(!super::merge_wowup_install(&mut list, "_forever_", "Wow.exe", "Forever", "/x/_forever_/Wow.exe"));
+        assert!(!super::merge_wowup_install(&mut list, "_classic_era_", "WowClassic.exe", "Classic Era", "/w/_classic_era_/WowClassic.exe"));
+        assert_eq!(list[0]["clientType"], 10);
+        assert_eq!(list[1]["clientType"], 6, "entries the user made stay as they are");
+        assert_eq!(list[2]["clientType"], 6);
     }
 }
 
@@ -551,14 +566,17 @@ pub async fn wowup_install() -> Result<String, String> {
 
 /// WowUp's WowClientType for an install, mirroring WowUp's own getClientType():
 /// Retail 0, Classic 1, RetailPtr 2, ClassicPtr 3, Beta 4, ClassicBeta 5, ClassicEra 6,
-/// ClassicEraPtr 7, RetailXPtr 8, Anniversary 9.
+/// ClassicEraPtr 7, RetailXPtr 8, Anniversary 9, Forever 10.
 ///
-/// WowUp has no Forever type yet. Forever (`_forever_`) is the vanilla game on a 1.x
-/// client, so it is registered as ClassicEra (6), the closest match, even though it runs
-/// `Wow.exe`; as Retail (0) WowUp would offer it retail addons that do not load.
+/// Forever (`_forever_`) runs `Wow.exe`, so it is matched by folder: WowUp has its own
+/// Forever type since 2.25 and then offers the Forever builds addon authors publish.
+/// Launchers up to 0.2.45 registered it as ClassicEra (6); `merge_wowup_install` fixes those.
+const WOWUP_FOREVER: u32 = 10;
+const WOWUP_CLASSIC_ERA: u32 = 6;
+
 fn wowup_client_type(folder: &str, exe: &str) -> u32 {
     if folder == "_forever_" {
-        return 6;
+        return WOWUP_FOREVER;
     }
     match exe {
         "Wow.exe" => 0,
@@ -585,12 +603,19 @@ pub(crate) fn wowup_config_dir() -> PathBuf {
 /// Add one install to WowUp's `wow_installations` list, or fix the label of the entry we
 /// added before. WowUp's install picker shows `label`, so it must name the game version:
 /// launchers up to 0.2.40 wrote "BlizzNux" for every install, which made them all look
-/// the same. Entries the user added in WowUp are never touched. Returns true when added.
+/// the same. Launchers up to 0.2.45 also registered Forever as ClassicEra, which made
+/// WowUp install Era builds there; our own Forever entry is moved to WowUp's Forever type.
+/// Entries the user added in WowUp are never touched. Returns true when added.
 fn merge_wowup_install(list: &mut Vec<serde_json::Value>, flavor: &str, exe: &str, label: &str, location: &str) -> bool {
     let id = format!("blizznux-{}", flavor.trim_matches('_'));
     if let Some(entry) = list.iter_mut().find(|i| i["location"].as_str() == Some(location)) {
-        if entry["id"].as_str() == Some(id.as_str()) && entry["label"].as_str() == Some("BlizzNux") {
-            entry["label"] = serde_json::json!(label);
+        if entry["id"].as_str() == Some(id.as_str()) {
+            if entry["label"].as_str() == Some("BlizzNux") {
+                entry["label"] = serde_json::json!(label);
+            }
+            if flavor == "_forever_" && entry["clientType"].as_u64() == Some(WOWUP_CLASSIC_ERA as u64) {
+                entry["clientType"] = serde_json::json!(WOWUP_FOREVER);
+            }
         }
         return false;
     }
