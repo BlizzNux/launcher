@@ -427,6 +427,24 @@ async function closeBattlenet() {
   try { showSession(await invoke("session_state")); } catch { close.disabled = false; }
 }
 
+// Battle.net did not start and something from an earlier session still runs in the prefix:
+// offer to end it and start again. The status line clears itself, the button stays until used.
+function offerRetry(on) { $("#retry-launch").classList.toggle("hidden", !on); }
+
+async function closeLeftoversAndRetry() {
+  const btn = $("#retry-launch");
+  btn.disabled = true;
+  status("Closing what an earlier session left running…");
+  try {
+    status(await invoke("reset_prefix_processes"));
+    offerRetry(false);
+    btn.disabled = false;
+    await launch();
+    return;
+  } catch (e) { status(String(e), true); }
+  btn.disabled = false;
+}
+
 async function refreshState(openSetupIfMissing = false) {
   try { state = await invoke("install_state"); } catch (e) { console.error(e); return state; }
   refreshAddonsButton();
@@ -438,6 +456,7 @@ async function refreshState(openSetupIfMissing = false) {
 async function launch(game) {
   if (!state.installed) { showPanel("setup"); loadChecks(); return; }
   if (session.battlenet) { status(session.game ? `${session.game} is running.` : "Battle.net is already running."); return; }
+  offerRetry(false);
   status(game ? `Starting Battle.net and launching ${game}…` : "Starting Battle.net…");
   try {
     await invoke("launch", { game: game || null });
@@ -628,7 +647,14 @@ async function init() {
   $("#close-bnet").onclick = closeBattlenet;
   window.__TAURI__.event.listen("game-closed-early", onGameClosedEarly);
   window.__TAURI__.event.listen("launch-progress", (e) => status(String(e.payload)));
-  window.__TAURI__.event.listen("launch-result", (e) => { if (!(e.payload || {}).ok) status("Battle.net did not start within two minutes. Check the log in Settings.", true); });
+  $("#retry-launch").onclick = closeLeftoversAndRetry;
+  window.__TAURI__.event.listen("launch-result", (e) => {
+    const p = e.payload || {};
+    offerRetry(!p.ok && p.leftovers > 0);
+    if (p.ok) return;
+    if (p.leftovers > 0) status("Battle.net did not start. Something from an earlier session is still running.", true);
+    else status("Battle.net did not start within two minutes. Check the log in Settings.", true);
+  });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome})${p.lab ? " (Modified)" : ""}.`); });
   $("#site").addEventListener("load", onSiteLoaded);
   $("#cfg-bug-auto").addEventListener("change", saveConfig);
