@@ -1758,7 +1758,7 @@ pub async fn reset_prefix_processes() -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let prefix = current_prefix();
         if let Some(game) = game_in_prefix(&prefix) {
-            return Err(format!("{game} is running. Close the game first, then close what is left of the session."));
+            return Err(format!("{game} is running. Close the game first, then try again."));
         }
         let pids = prefix_leftovers(&prefix);
         if pids.is_empty() {
@@ -1770,7 +1770,7 @@ pub async fn reset_prefix_processes() -> Result<String, String> {
         for _ in 0..20 {
             std::thread::sleep(Duration::from_millis(500));
             if prefix_leftovers(&prefix).is_empty() {
-                return Ok("Closed what an earlier session left running.".to_string());
+                return Ok("Closed what was stuck.".to_string());
             }
         }
         if game_in_prefix(&prefix).is_some() {
@@ -1781,7 +1781,7 @@ pub async fn reset_prefix_processes() -> Result<String, String> {
         std::thread::sleep(Duration::from_secs(1));
         if prefix_leftovers(&prefix).is_empty() {
             note(&format!("{} leftover processes did not exit on request and were stopped", now_iso()));
-            Ok("Closed what an earlier session left running.".to_string())
+            Ok("Closed what was stuck.".to_string())
         } else {
             Err("Some processes did not close. Try again in a moment.".to_string())
         }

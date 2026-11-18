@@ -434,7 +434,7 @@ function offerRetry(on) { $("#retry-launch").classList.toggle("hidden", !on); }
 async function closeLeftoversAndRetry() {
   const btn = $("#retry-launch");
   btn.disabled = true;
-  status("Closing what an earlier session left running…");
+  status("Closing what was stuck…");
   try {
     status(await invoke("reset_prefix_processes"));
     offerRetry(false);
@@ -652,7 +652,7 @@ async function init() {
     const p = e.payload || {};
     offerRetry(!p.ok && p.leftovers > 0);
     if (p.ok) return;
-    if (p.leftovers > 0) status("Battle.net did not start. Something from an earlier session is still running.", true);
+    if (p.leftovers > 0) status("Battle.net did not start. Something in its Wine prefix is stuck.", true);
     else status("Battle.net did not start within two minutes. Check the log in Settings.", true);
   });
   window.__TAURI__.event.listen("report-sent", (e) => { const p = e.payload || {}; status(`Shared ${p.kind === "launch" ? "launch" : "game"} report (${p.outcome})${p.lab ? " (Modified)" : ""}.`); });
