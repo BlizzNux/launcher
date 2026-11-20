@@ -200,7 +200,51 @@ hybrid_display_gpu() {
 	return 0
 }
 
+# Hides CPU Vulkan drivers (lavapipe, llvmpipe, SwiftShader) from the Vulkan loader. Arch's steam,
+# umu-launcher and proton-cachyos-slr accept vulkan-swrast as their vulkan-driver provider, so it can
+# get installed next to the real GPU driver, and then libvulkan_lvp.so is loaded in every Wine process
+# and Battle.net's overlay (which DXVK's deviceFilter does not cover) can pick it and burn CPU.
+# Only when a GPU driver is installed too (never hide the only one), and not when the user steers
+# the loader themselves. Remove once those packages stop pulling in a CPU driver.
+# Mechanism: VK_LOADER_DRIVERS_DISABLE (Vulkan-Loader >= 1.3.234), a glob per manifest name. It also
+# works inside umu / Proton's Steam Linux Runtime: pressure-vessel never touches it, so it is passed
+# into the container, sniper ships libvulkan1 1.4.309, and the exported manifests keep their file
+# name (a name clash only adds a numbered subdirectory), so the glob still matches. pressure-vessel
+# does overwrite VK_DRIVER_FILES / VK_ICD_FILENAMES there, which is why those are not used.
+# https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md
+# https://gitlab.steamos.cloud/steamrt/steam-runtime-tools/-/blob/main/pressure-vessel/runtime.c
+# https://repo.steampowered.com/steamrt3/images/latest-public-stable/
+hide_cpu_vulkan() {
+	[[ -z ${VK_LOADER_DRIVERS_DISABLE:-}${VK_DRIVER_FILES:-}${VK_ICD_FILENAMES:-}${VK_LOADER_DRIVERS_SELECT:-} ]] || return 0
+	local dirs d f base lib seen=" " cpu=() gpu=0 globs="" g xdg
+	dirs=${BLIZZNUX_ICD_DIRS:-/usr/share/vulkan/icd.d /etc/vulkan/icd.d /usr/local/share/vulkan/icd.d /usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d /run/opengl-driver/share/vulkan/icd.d}
+	dirs="$dirs ${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"
+	local IFS=:
+	for xdg in ${XDG_DATA_DIRS:-}; do [[ -n $xdg ]] && dirs="$dirs $xdg/vulkan/icd.d"; done
+	IFS=$' \t\n'
+	for d in $dirs; do
+		for f in "$d"/*.json; do
+			[[ -f $f ]] || continue
+			base=${f##*/}
+			[[ $seen == *" $base "* ]] && continue
+			seen+="$base "
+			lib=$(grep -o '"library_path"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null || true)
+			if [[ ${base,,}$'\n'${lib,,} =~ lvp|lavapipe|llvmpipe|swrast|swiftshader ]]; then
+				base=${base%.json}; base=${base%.x86_64}; base=${base%.i686}
+				[[ " ${cpu[*]:-} " == *" $base "* ]] || cpu+=("$base")
+			else
+				gpu=1
+			fi
+		done
+	done
+	((gpu && ${#cpu[@]})) || return 0
+	for g in "${cpu[@]}"; do globs+="${globs:+,}*${g}*"; done
+	export VK_LOADER_DRIVERS_DISABLE=$globs
+	log "hiding CPU Vulkan driver(s) from Battle.net and games: ${cpu[*]} (VK_LOADER_DRIVERS_DISABLE=$globs)"
+}
+
 gpu_env() {
+	hide_cpu_vulkan
 	# The NVIDIA driver stops storing shaders once its shared cache reaches the size limit, and a large
 	# game then compiles the rest again at every start. The launcher keeps its own cache with a 10 GB
 	# limit, in a folder no other program cleans up. Values set by the user win.

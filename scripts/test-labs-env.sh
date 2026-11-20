@@ -12,7 +12,7 @@ run() {
 	local got
 	got=$(env -u DXVK_CONFIG -u PROTON_USE_XALIA -u HYPRLAND_INSTANCE_SIGNATURE "$@" bash -c '
 		set -euo pipefail
-		eval "$(sed -n "/^gpu_env()/,/^}/p;/^bnet_fps_config()/,/^}/p;/^xalia_env()/,/^}/p;/^labs_env()/,/^}/p" bin/blizznux-run)"
+		eval "$(sed -n "/^hide_cpu_vulkan()/,/^}/p;/^gpu_env()/,/^}/p;/^bnet_fps_config()/,/^}/p;/^xalia_env()/,/^}/p;/^labs_env()/,/^}/p" bin/blizznux-run)"
 		log() { :; }
 		hybrid_nvidia() { return 0; }
 		hybrid_display_gpu() { echo AMD; }
@@ -51,7 +51,7 @@ fi
 # Same Hyprland check with the default config that gpu_env sets when the NVIDIA driver is there.
 got=$(env -u PROTON_USE_XALIA HYPRLAND_INSTANCE_SIGNATURE=x DXVK_CONFIG="dxvk.trackPipelineLifetime = True" bash -c '
 	set -euo pipefail
-	eval "$(sed -n "/^gpu_env()/,/^}/p;/^bnet_fps_config()/,/^}/p;/^xalia_env()/,/^}/p;/^labs_env()/,/^}/p" bin/blizznux-run)"
+	eval "$(sed -n "/^hide_cpu_vulkan()/,/^}/p;/^gpu_env()/,/^}/p;/^bnet_fps_config()/,/^}/p;/^xalia_env()/,/^}/p;/^labs_env()/,/^}/p" bin/blizznux-run)"
 	log() { :; }; hybrid_nvidia() { return 0; }; hybrid_display_gpu() { echo AMD; }
 	custom_proton() { :; }; custom_proton_source() { :; }
 	CACHE_DIR=$(mktemp -d); OFFLOAD=on; LAB_DIRECT_PROTON=0; LAB_WOW64=0; LAB_BNET_FPS=1
