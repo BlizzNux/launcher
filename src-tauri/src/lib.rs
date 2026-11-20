@@ -841,6 +841,7 @@ pub fn run() {
             reports::account_status,
             reports::session_state,
             reports::close_battlenet,
+            reports::reset_prefix_processes,
             reports::link_start,
             reports::link_poll,
             reports::link_cancel,

@@ -1638,7 +1638,6 @@ pub fn begin_launch() -> Option<LaunchGuard> {
 pub fn watch_launch(app: AppHandle, guard: LaunchGuard) {
     set_session_lab(labs_in(&load_config()));
     std::thread::spawn(move || {
-        let _guard = guard;
         let mut start = Instant::now();
         let mut ok = false;
         while start.elapsed() < Duration::from_secs(120) {
@@ -1654,7 +1653,13 @@ pub fn watch_launch(app: AppHandle, guard: LaunchGuard) {
             }
             std::thread::sleep(Duration::from_secs(3));
         }
-        let _ = app.emit("launch-result", serde_json::json!({ "ok": ok }));
+        // Free the launch flag before the result goes out, so the retry offered with it is never refused.
+        drop(guard);
+        let leftovers = if ok { 0 } else { prefix_leftovers(&current_prefix()).len() };
+        if leftovers > 0 {
+            note(&format!("{} Battle.net did not start; {leftovers} processes of an earlier session still run in the prefix", now_iso()));
+        }
+        let _ = app.emit("launch-result", serde_json::json!({ "ok": ok, "leftovers": leftovers }));
         auto_report(&app, "launch", None, if ok { "ok" } else { "failed" }, if ok { String::new() } else { "Battle.net did not start within two minutes".into() });
         if !ok {
             auto_bug_report(&app, "Battle.net did not start within two minutes".into());
@@ -1675,6 +1680,43 @@ fn runs_in_prefix(pid: u32, prefix: &Path) -> bool {
     let Some(theirs) = env.split(|b| *b == 0).find_map(|kv| kv.strip_prefix(b"WINEPREFIX=")) else { return false };
     let theirs = PathBuf::from(String::from_utf8_lossy(theirs).to_string());
     matches!((fs::canonicalize(theirs), fs::canonicalize(prefix)), (Ok(a), Ok(b)) if a == b)
+}
+
+/// The paths a process's environment names as its Wine prefix: WINEPREFIX (set by Proton and
+/// umu for everything Wine starts) and STEAM_COMPAT_DATA_PATH (set earlier, for Proton's own
+/// setup scripts, which stall before any Wine process exists).
+fn prefix_env_paths(env: &[u8]) -> Vec<PathBuf> {
+    env.split(|b| *b == 0)
+        .filter_map(|kv| kv.strip_prefix(b"WINEPREFIX=").or_else(|| kv.strip_prefix(b"STEAM_COMPAT_DATA_PATH=")))
+        .filter(|v| !v.is_empty())
+        .map(|v| PathBuf::from(String::from_utf8_lossy(v).to_string()))
+        .collect()
+}
+
+/// Is any of these paths the prefix, once both sides are resolved? umu's `<prefix>/pfx/` is a
+/// link back to the prefix itself.
+fn names_prefix(paths: &[PathBuf], prefix: &Path) -> bool {
+    let Ok(ours) = fs::canonicalize(prefix) else { return false };
+    paths.iter().any(|p| fs::canonicalize(p).map_or(false, |theirs| theirs == ours))
+}
+
+/// Everything still running in the launcher's own prefix: wineserver, explorer, services,
+/// winedevice, Battle.net, the Agent, and Proton's setup scripts. Found by the prefix in each
+/// process's environment, not by name, so nothing from another prefix or another Wine
+/// (Steam, Lutris) is ever included. The launcher itself is left out.
+fn prefix_leftovers(prefix: &Path) -> Vec<u32> {
+    let mut found = Vec::new();
+    let me = std::process::id();
+    let Ok(rd) = fs::read_dir("/proc") else { return found };
+    for e in rd.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
+        if pid == me { continue }
+        let Ok(env) = fs::read(e.path().join("environ")) else { continue };
+        if names_prefix(&prefix_env_paths(&env), prefix) {
+            found.push(pid);
+        }
+    }
+    found
 }
 
 /// Process ids of the given programs, from /proc/*/cmdline. With a prefix, only the ones running
@@ -1802,6 +1844,46 @@ pub async fn close_battlenet() -> Result<String, String> {
             Ok("Battle.net is closed.".to_string())
         } else {
             Err("Battle.net did not close. Try again in a moment.".to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// End everything an earlier session left running in the launcher's prefix, so a start that
+/// stalled in Proton's setup can be tried again. Same rules as `close_battlenet`: never while a
+/// game runs in the prefix, SIGTERM first, SIGKILL after ten seconds, only this prefix.
+#[tauri::command]
+pub async fn reset_prefix_processes() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let prefix = current_prefix();
+        if let Some(game) = game_in_prefix(&prefix) {
+            return Err(format!("{game} is running. Close the game first, then try again."));
+        }
+        let pids = prefix_leftovers(&prefix);
+        if pids.is_empty() {
+            return Ok("Nothing is left running.".to_string());
+        }
+        note(&format!("{} closing {} leftover processes in the prefix", now_iso(), pids.len()));
+        #[cfg(target_os = "linux")]
+        signal_all(&pids, libc::SIGTERM);
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(500));
+            if prefix_leftovers(&prefix).is_empty() {
+                return Ok("Closed what was stuck.".to_string());
+            }
+        }
+        if game_in_prefix(&prefix).is_some() {
+            return Err("A game started while this was closing, so it was left running.".to_string());
+        }
+        #[cfg(target_os = "linux")]
+        signal_all(&prefix_leftovers(&prefix), libc::SIGKILL);
+        std::thread::sleep(Duration::from_secs(1));
+        if prefix_leftovers(&prefix).is_empty() {
+            note(&format!("{} leftover processes did not exit on request and were stopped", now_iso()));
+            Ok("Closed what was stuck.".to_string())
+        } else {
+            Err("Some processes did not close. Try again in a moment.".to_string())
         }
     })
     .await
@@ -2030,6 +2112,34 @@ mod tests {
         assert!(newest_crash(&dir, later, 3600).is_none());
         let _ = fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn the_prefix_is_read_from_either_variable() {
+        use std::path::PathBuf;
+        let env = b"HOME=/h\0WINEPREFIX=/p/pfx/\0STEAM_COMPAT_DATA_PATH=/p\0WINEPREFIX=\0";
+        assert_eq!(super::prefix_env_paths(env), vec![PathBuf::from("/p/pfx/"), PathBuf::from("/p")]);
+        assert!(super::prefix_env_paths(b"HOME=/h\0PATH=/bin").is_empty());
+    }
+
+    #[test]
+    fn a_prefix_is_matched_through_its_pfx_link_and_never_by_prefix_of_the_name() {
+        use std::path::PathBuf;
+        let dir = std::env::temp_dir().join(format!("bnx-prefix-{}", std::process::id()));
+        let other = std::env::temp_dir().join(format!("bnx-prefix-{}-other", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&other);
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink(&dir, dir.join("pfx"));
+            assert!(super::names_prefix(&[dir.join("pfx")], &dir));
+        }
+        assert!(super::names_prefix(&[PathBuf::from("/nonexistent"), dir.clone()], &dir));
+        assert!(!super::names_prefix(&[other.clone()], &dir));
+        assert!(!super::names_prefix(&[], &dir));
+        assert!(!super::names_prefix(&[dir.clone()], &dir.join("missing")));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
     use super::*;
 
     #[test]
