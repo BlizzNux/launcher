@@ -7,6 +7,8 @@ use tauri::{AppHandle, Manager};
 
 mod addons;
 #[cfg(target_os = "linux")]
+mod glprobe;
+#[cfg(target_os = "linux")]
 mod notify;
 mod reports;
 mod updates;
@@ -752,6 +754,8 @@ fn set_app_id() {
 
 pub fn run() {
     set_app_id();
+    #[cfg(target_os = "linux")]
+    glprobe::maybe_reexec();
     // WebKitGTK renders with hardware acceleration by default. If the forum view shows
     // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
@@ -779,6 +783,17 @@ pub fn run() {
             }
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_title(&format!("BlizzNux Launcher v{}", env!("CARGO_PKG_VERSION")));
+                // Restarted under XWayland (see glprobe): match the Wayland size and scale.
+                #[cfg(target_os = "linux")]
+                if let Some(z) = glprobe::fallback_zoom() {
+                    let _ = main.set_zoom(z);
+                    if let Ok(size) = main.inner_size() {
+                        let _ = main.set_size(tauri::PhysicalSize::new(
+                            (size.width as f64 * z) as u32,
+                            (size.height as f64 * z) as u32,
+                        ));
+                    }
+                }
                 let _ = main.with_webview(|platform| {
                     #[cfg(target_os = "linux")]
                     {
