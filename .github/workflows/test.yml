@@ -38,7 +38,7 @@ jobs:
       - name: Wrapper GPU setup on machines without hybrid NVIDIA
         run: |
           bash -c 'set -euo pipefail
-            eval "$(sed -n "/^hybrid_nvidia()/,/^}/p;/^gpu_env()/,/^}/p" bin/blizznux-run)"
+            eval "$(sed -n "/^hide_cpu_vulkan()/,/^}/p;/^hybrid_nvidia()/,/^}/p;/^gpu_env()/,/^}/p" bin/blizznux-run)"
             hybrid_nvidia() { return 1; }
             CACHE_DIR=$(mktemp -d)
             for OFFLOAD in auto off on; do gpu_env; done
