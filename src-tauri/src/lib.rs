@@ -28,6 +28,8 @@ pub(crate) fn host_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     if let Some(appdir) = std::env::var("APPDIR").ok().filter(|d| !d.is_empty()) {
         cmd.env_clear().envs(updates::env_outside_appimage(std::env::vars_os(), &appdir)).current_dir(home());
     }
+    #[cfg(target_os = "linux")]
+    glprobe::scrub_child_env(&mut cmd);
     cmd
 }
 
