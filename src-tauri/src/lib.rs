@@ -806,23 +806,23 @@ pub fn run() {
                         use webkit2gtk::{CookieManagerExt, WebContextExt, WebViewExt};
                         // Ctrl +/-/0 zoom, caught here because the forum frame takes the keys otherwise.
                         {
-                            use gtk::glib::Inhibit;
+                            use gtk::glib::Propagation;
                             use gtk::gdk::ModifierType;
                             use gtk::prelude::WidgetExt;
                             platform.inner().connect_key_press_event(|wv, event| {
                                 let state = event.state();
                                 if !state.contains(ModifierType::CONTROL_MASK) || state.contains(ModifierType::MOD1_MASK) {
-                                    return Inhibit(false);
+                                    return Propagation::Proceed;
                                 }
                                 let Some(action) = glprobe::zoom_key(&event.keyval()) else {
-                                    return Inhibit(false);
+                                    return Propagation::Proceed;
                                 };
                                 let z = glprobe::step_zoom(WebViewExt::zoom_level(wv), action);
                                 WebViewExt::set_zoom_level(wv, z);
                                 let mut cfg = load_config();
                                 cfg.insert("ZOOM".into(), z.to_string());
                                 let _ = save_config(&cfg);
-                                Inhibit(true)
+                                Propagation::Stop
                             });
                         }
                         if let Some(ctx) = platform.inner().context() {
