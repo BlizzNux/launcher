@@ -91,7 +91,7 @@ fn probe() -> Result<bool, String> {
         None => Err("no GDK window".to_string()),
         Some(gdk_window) => gdk_window
             .create_gl_context()
-            .and_then(|ctx| gtk::gdk::prelude::GLContextExt::realize(&ctx))
+            .and_then(|ctx| gtk::gdk::prelude::GdkContextExt::realize(&ctx))
             .map_err(|e| e.to_string()),
     };
     #[allow(unused_unsafe)]
