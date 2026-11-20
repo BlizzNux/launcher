@@ -7,6 +7,8 @@ use tauri::{AppHandle, Manager};
 
 mod addons;
 #[cfg(target_os = "linux")]
+mod glprobe;
+#[cfg(target_os = "linux")]
 mod notify;
 mod reports;
 mod updates;
@@ -199,7 +201,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     if let Ok(text) = fs::read_to_string(config_path()) {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
-                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK" | "LAB_WOW64" | "LAB_PROTON_DIR" | "LAB_DIRECT_PROTON" | "LAB_BNET_FPS") {
+                if matches!(k, "PREFIX" | "OFFLOAD" | "INSTALL_ID" | "REPORTS_AUTO" | "USER_TOKEN" | "USERNAME" | "LAST_USERNAME" | "REPORTS_SHARE" | "BUG_AUTO" | "LAST_LAUNCH_OK" | "LAST_RUN_OK" | "LAB_WOW64" | "LAB_PROTON_DIR" | "LAB_DIRECT_PROTON" | "LAB_BNET_FPS" | "ZOOM") {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
@@ -228,7 +230,7 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("PREFIX").cloned().unwrap_or_default(),
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
-    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64", "LAB_PROTON_DIR", "LAB_DIRECT_PROTON", "LAB_BNET_FPS"] {
+    for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64", "LAB_PROTON_DIR", "LAB_DIRECT_PROTON", "LAB_BNET_FPS", "ZOOM"] {
         if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
@@ -752,6 +754,8 @@ fn set_app_id() {
 
 pub fn run() {
     set_app_id();
+    #[cfg(target_os = "linux")]
+    glprobe::maybe_reexec();
     // WebKitGTK renders with hardware acceleration by default. If the forum view shows
     // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
@@ -779,10 +783,48 @@ pub fn run() {
             }
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_title(&format!("BlizzNux Launcher v{}", env!("CARGO_PKG_VERSION")));
+                // Saved zoom (Ctrl +/-/0) or the one found for XWayland (see glprobe).
+                #[cfg(target_os = "linux")]
+                {
+                    let z = glprobe::start_zoom(load_config().get("ZOOM").map(|s| s.as_str()));
+                    if z != 1.0 {
+                        let _ = main.set_zoom(z);
+                    }
+                    // Under XWayland the window is scaled by the detected zoom, not the saved one.
+                    if let Some(w) = glprobe::fallback_zoom() {
+                        if let Ok(size) = main.inner_size() {
+                            let _ = main.set_size(tauri::PhysicalSize::new(
+                                (size.width as f64 * w) as u32,
+                                (size.height as f64 * w) as u32,
+                            ));
+                        }
+                    }
+                }
                 let _ = main.with_webview(|platform| {
                     #[cfg(target_os = "linux")]
                     {
                         use webkit2gtk::{CookieManagerExt, WebContextExt, WebViewExt};
+                        // Ctrl +/-/0 zoom, caught here because the forum frame takes the keys otherwise.
+                        {
+                            use gtk::glib::Propagation;
+                            use gtk::gdk::ModifierType;
+                            use gtk::prelude::WidgetExt;
+                            platform.inner().connect_key_press_event(|wv, event| {
+                                let state = event.state();
+                                if !state.contains(ModifierType::CONTROL_MASK) || state.contains(ModifierType::MOD1_MASK) {
+                                    return Propagation::Proceed;
+                                }
+                                let Some(action) = glprobe::zoom_key(&event.keyval()) else {
+                                    return Propagation::Proceed;
+                                };
+                                let z = glprobe::step_zoom(WebViewExt::zoom_level(wv), action);
+                                WebViewExt::set_zoom_level(wv, z);
+                                let mut cfg = load_config();
+                                cfg.insert("ZOOM".into(), z.to_string());
+                                let _ = save_config(&cfg);
+                                Propagation::Stop
+                            });
+                        }
                         if let Some(ctx) = platform.inner().context() {
                             if let Some(cm) = ctx.cookie_manager() {
                                 cm.set_accept_policy(webkit2gtk::CookieAcceptPolicy::Always);

@@ -462,7 +462,7 @@ pub fn system_profile() -> SystemProfile {
         distro: os_release("PRETTY_NAME"),
         kernel: fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).unwrap_or_default(),
         desktop: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
-        session: std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
+        session: session_label(std::env::var("XDG_SESSION_TYPE").unwrap_or_default(), std::env::var_os("BLIZZNUX_GL_FALLBACK").is_some()),
         cpu,
         ram_gb: installed_ram_gb(ram_kb),
         gpus: gpus(),
@@ -2054,6 +2054,15 @@ fn session_end(secs: u64) -> (&'static str, bool) {
     if secs < 60 { ("game-closed-early", false) } else { ("game-ended", true) }
 }
 
+/// The session type for reports: a launcher restarted under XWayland says so (the site keeps 20 characters).
+fn session_label(xdg: String, xwayland_fallback: bool) -> String {
+    if xwayland_fallback {
+        "wayland (xwayland)".into()
+    } else {
+        xdg
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -2141,6 +2150,13 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_restart_under_xwayland_is_reported_as_such() {
+        assert_eq!(session_label("wayland".into(), true), "wayland (xwayland)");
+        assert!("wayland (xwayland)".len() <= 20);
+        assert_eq!(session_label("x11".into(), false), "x11");
+    }
 
     #[test]
     fn a_second_launch_is_refused_until_the_first_guard_drops() {
