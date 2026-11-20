@@ -12,6 +12,8 @@ use std::process::Command;
 
 const MARKER: &str = "BLIZZNUX_GL_FALLBACK";
 const OPT_OUT: &str = "BLIZZNUX_NO_GL_FALLBACK";
+/// The GDK_SCALE the user had before the restart set it to 1.
+const PREV_SCALE: &str = "BLIZZNUX_GL_PREV_GDK_SCALE";
 
 fn env_set(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|v| !v.is_empty())
@@ -181,15 +183,53 @@ pub fn maybe_reexec() {
         .env(MARKER, "1")
         .env("BLIZZNUX_GL_ZOOM", z.to_string());
     if z != 1.0 {
+        if let Some(prev) = std::env::var_os("GDK_SCALE") {
+            cmd.env(PREV_SCALE, prev);
+        }
         cmd.env("GDK_SCALE", "1");
     }
     let err = cmd.exec();
     note(&format!("[gl] restart under XWayland failed ({err}); continuing on Wayland."));
 }
 
+/// What the restart under XWayland put in our environment, for the launcher's own window only.
+/// Battle.net, the games and WowUp must not inherit it: their windows would land on XWayland
+/// at the wrong scale. A GDK_SCALE the user had set before the restart is put back.
+pub fn scrub_child_env(cmd: &mut Command) {
+    if !env_set(MARKER) {
+        return;
+    }
+    for (k, v) in child_env_changes(std::env::var_os(PREV_SCALE)) {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+}
+
+fn child_env_changes(prev_scale: Option<std::ffi::OsString>) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+    vec![
+        ("GDK_BACKEND", None),
+        (MARKER, None),
+        ("BLIZZNUX_GL_ZOOM", None),
+        (PREV_SCALE, None),
+        ("GDK_SCALE", prev_scale),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn children_lose_the_fallback_env_and_get_their_own_scale_back() {
+        let none = child_env_changes(None);
+        for k in ["GDK_BACKEND", MARKER, "BLIZZNUX_GL_ZOOM", PREV_SCALE, "GDK_SCALE"] {
+            assert!(none.iter().any(|(n, v)| *n == k && v.is_none()), "{k} not removed");
+        }
+        let back = child_env_changes(Some("2".into()));
+        assert!(back.iter().any(|(n, v)| *n == "GDK_SCALE" && v.as_deref() == Some(std::ffi::OsStr::new("2"))));
+    }
 
     #[test]
     fn zoom_text_must_be_a_sane_number() {
