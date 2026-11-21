@@ -31,6 +31,8 @@ Open the `.deb` or `.rpm` file to install it, then start **BlizzNux** from your 
 For the `.AppImage`, right-click it, open **Properties**, allow it to run as a program, then
 double-click it.
 
+**Note:** The launcher requires a 64-bit x86 CPU.
+
 ### NixOS
 
 NixOS packaging is maintained by [@caniko](https://github.com/caniko), the project's NixOS
