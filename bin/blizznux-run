@@ -49,6 +49,10 @@ Usage:
                                         first use) and show it.
   blizznux-run doctor                   Show what would be used and why.
 
+  blizznux-run fix [--print] ID...      Internal, used by the app through pkexec: run the readiness
+                                        fix steps named by their ids (--print shows the commands
+                                        without running anything). A step takes no further words.
+
 Options:
   --offload on|off  NVIDIA PRIME render offload (default: auto, on when a hybrid NVIDIA setup is found).
 
@@ -459,6 +463,84 @@ cmd_doctor() {
 	echo "config:    $CONFIG"
 }
 
+# ---- readiness fixes ---------------------------------------------------------
+# The app asks for these as root: one pkexec call for a whole fix, however many steps it has, so
+# the user answers one password prompt. Each step is named by an id, and the id alone decides what
+# runs: the caller's words never become part of a command and an id takes no argument of its own.
+# Steps run in the order given and stop at the first failure with that step's exit status.
+
+# The NVIDIA driver major version (digits only) from the kernel module, for the Debian 32-bit
+# driver package name. Fails when that cannot be read. BLIZZNUX_NVIDIA_VERSION is a test aid, not
+# used by the app.
+nvidia_major() {
+	local text token file=${BLIZZNUX_NVIDIA_VERSION:-/proc/driver/nvidia/version}
+	text=$(cat "$file" 2>/dev/null) || return 1
+	for token in $text; do
+		[[ $token =~ ^([0-9]+)\.[0-9] ]] || continue
+		printf '%s' "${BASH_REMATCH[1]}"
+		return 0
+	done
+	return 1
+}
+
+# fix_argv ID: the command one step id stands for, in FIX_ARGV. Returns 1 for an unknown id.
+fix_argv() {
+	local major
+	case $1 in
+	pacman-python) FIX_ARGV=(pacman -S --needed --noconfirm python) ;;
+	dnf-python3) FIX_ARGV=(dnf -y install python3) ;;
+	apt-update) FIX_ARGV=(apt-get update) ;;
+	apt-python3) FIX_ARGV=(apt-get install -y python3) ;;
+	pacman-xz) FIX_ARGV=(pacman -S --needed --noconfirm xz) ;;
+	dnf-xz) FIX_ARGV=(dnf -y install xz) ;;
+	apt-xz-utils) FIX_ARGV=(apt-get install -y xz-utils) ;;
+	pacman-curl) FIX_ARGV=(pacman -S --needed --noconfirm curl) ;;
+	dnf-curl) FIX_ARGV=(dnf -y install curl) ;;
+	apt-curl) FIX_ARGV=(apt-get install -y curl) ;;
+	sed-multilib) FIX_ARGV=(sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /etc/pacman.conf) ;;
+	pacman-sy) FIX_ARGV=(pacman -Sy) ;;
+	pacman-lib32-nvidia-utils) FIX_ARGV=(pacman -S --needed --noconfirm lib32-nvidia-utils) ;;
+	pacman-lib32-vulkan-radeon) FIX_ARGV=(pacman -S --needed --noconfirm lib32-vulkan-radeon) ;;
+	pacman-lib32-vulkan-intel) FIX_ARGV=(pacman -S --needed --noconfirm lib32-vulkan-intel) ;;
+	dnf-nvidia-driver-libs-i686) FIX_ARGV=(dnf -y install nvidia-driver-libs.i686) ;;
+	dnf-mesa-vulkan-drivers-i686) FIX_ARGV=(dnf -y install mesa-vulkan-drivers.i686) ;;
+	dpkg-i386) FIX_ARGV=(dpkg --add-architecture i386) ;;
+	apt-vulkan-nvidia)
+		major=$(nvidia_major) || die "the NVIDIA driver version could not be read from /proc/driver/nvidia/version"
+		FIX_ARGV=(apt-get install -y "libnvidia-gl-$major:i386")
+		;;
+	apt-vulkan-mesa) FIX_ARGV=(apt-get install -y mesa-vulkan-drivers:i386) ;;
+	*) return 1 ;;
+	esac
+}
+
+# One command as the line the user reads and could paste: bare words stay bare, anything a shell
+# would split or interpret gets single quotes (the multilib sed script needs them).
+fix_line() {
+	local w line=""
+	for w in "$@"; do
+		[[ $w =~ ^[A-Za-z0-9_./:=@%+,^-]+$ ]] || w="'${w//"'"/"'\\''"}'"
+		line=${line:+$line }$w
+	done
+	printf '%s' "$line"
+}
+
+cmd_fix() {
+	local id print=0
+	[[ ${1:-} != --print ]] || { print=1; shift; }
+	(( $# )) || die "fix needs at least one step id"
+	# Every id is checked before anything runs, so a mistyped word cannot run the steps before it.
+	for id in "$@"; do
+		fix_argv "$id" || { log "error: unknown fix step '$id'"; exit 2; }
+	done
+	for id in "$@"; do
+		fix_argv "$id" || exit 2   # checked above: this call only fills FIX_ARGV
+		[[ $print == 0 ]] || { fix_line "${FIX_ARGV[@]}"; echo; continue; }
+		printf '+ %s\n' "$(fix_line "${FIX_ARGV[@]}")"
+		if "${FIX_ARGV[@]}"; then :; else exit $?; fi
+	done
+}
+
 # Reads the command and its options. The first word that is not an option stops the options, so
 # "dpi 144" keeps its number for the command. Only the command's own arguments follow it: one for
 # dpi, none for the rest. A mistyped option or an extra word is reported, never ignored.
@@ -467,6 +549,13 @@ parse_args() {
 	while (( $# )); do
 		case $1 in
 		launch|install|dpi|umu|proton|doctor) cmd=$1 ;;
+		fix)
+			# The step ids follow at once and the fix command checks them itself: nothing after
+			# "fix" is an option of the script any more.
+			cmd=$1
+			shift
+			break
+			;;
 		import|--prefix|--proton) die "'$1' is gone: the launcher installs Battle.net itself and runs it on its own Proton" ;;
 		--game)
 			[[ -n ${2:-} ]] || usage_error "--game needs a code"
@@ -492,6 +581,8 @@ parse_args() {
 	ARGS=("$@")
 	if [[ $cmd == dpi ]]; then
 		(( $# <= 1 )) || usage_error "unexpected argument '${ARGS[1]}'"
+	elif [[ $cmd == fix ]]; then
+		:   # the step ids are checked by the fix command itself
 	else
 		(( $# == 0 )) || usage_error "unexpected argument '${ARGS[0]}'"
 	fi
@@ -506,4 +597,5 @@ dpi) keep_log; cmd_dpi "${ARGS[0]:-}" ;;
 umu) cmd_umu ;;
 proton) cmd_proton ;;
 doctor) cmd_doctor ;;
+fix) cmd_fix "${ARGS[@]}" ;;
 esac
