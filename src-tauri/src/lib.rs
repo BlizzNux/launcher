@@ -802,7 +802,10 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
             }
         }
         "agent-state" => serde_json::to_string_pretty(&reports::agent_state()),
-        "flush-reports" => Ok(format!("{} sent", tauri::async_runtime::block_on(reports::flush_reports()))),
+        "flush-reports" => {
+            let f = tauri::async_runtime::block_on(reports::flush_reports());
+            Ok(if f.too_large > 0 { format!("{} sent, {} too large for the site and kept", f.sent, f.too_large) } else { format!("{} sent", f.sent) })
+        }
         _ => { eprintln!("unknown command"); return 2; }
     };
     match out {

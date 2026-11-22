@@ -1358,48 +1358,161 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
 }
 
 /// Why a report was not delivered: the site refused this report, the site takes reports only
-/// from a logged-in launcher, or the site could not take any right now (offline, rate limit,
-/// server trouble), which is worth another try later.
+/// from a logged-in launcher, the site could not take any right now (offline, rate limit,
+/// server trouble), which is worth another try later, or the report is too large for it even
+/// with its log cut down.
 enum SendError {
     Refused(String),
     LoginRequired(String),
     Unreachable(String),
+    TooLarge(String),
+}
+
+impl SendError {
+    fn why(&self) -> &str {
+        match self {
+            SendError::Refused(why) | SendError::LoginRequired(why) | SendError::Unreachable(why) | SendError::TooLarge(why) => why,
+        }
+    }
 }
 
 const LOGIN_NEEDED: &str = "Log in to BlizzNux to send reports.";
 
 #[tauri::command]
-pub async fn send_report(report: serde_json::Value) -> Result<String, String> {
-    post_report(&report).await.map_err(|e| match e {
-        SendError::Refused(why) | SendError::LoginRequired(why) | SendError::Unreachable(why) => why,
-    })
+pub async fn send_report(mut report: serde_json::Value) -> Result<String, String> {
+    post_report(&mut report).await.result.map_err(|e| e.why().to_string())
 }
 
-async fn post_report(report: &serde_json::Value) -> Result<String, SendError> {
-    let offline = |_| SendError::Unreachable("The site could not be reached.".into());
-    let client = reqwest::Client::builder()
+/// The client that posts reports. A redirect is an error, never a request to wherever it points:
+/// a report goes to the one address the launcher was given.
+fn reports_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(offline)?;
-    let resp = client.post(report_url()).json(report).send().await.map_err(offline)?;
+        .map_err(|e| e.to_string())
+}
+
+/// What one try at the site came back with, and how long it asked to wait before another one
+/// (`Retry-After`, in seconds).
+struct Answer {
+    result: Result<String, SendError>,
+    retry_after: Option<u64>,
+}
+
+/// Posts a report once. One the site calls too large is cut down once and posted again: the site
+/// takes as much of it as it will, and the answer says so when it still will not.
+async fn post_report(report: &mut serde_json::Value) -> Answer {
+    let first = post_once(report).await;
+    if matches!(&first.result, Err(SendError::TooLarge(_))) && trim_large(report) {
+        let again = post_once(report).await;
+        if let Err(SendError::TooLarge(why)) = &again.result {
+            eprintln!("[report] still too large with no crash file and the log cut to its last {TRIM_LOG_LINES} lines: {why}");
+        }
+        return again;
+    }
+    first
+}
+
+async fn post_once(report: &serde_json::Value) -> Answer {
+    let offline = || Answer { result: Err(SendError::Unreachable("The site could not be reached.".into())), retry_after: None };
+    let client = match reports_client() {
+        Ok(client) => client,
+        Err(_) => return offline(),
+    };
+    let resp = match client.post(report_url()).json(report).send().await {
+        Ok(resp) => resp,
+        Err(_) => return offline(),
+    };
     let status = resp.status().as_u16();
-    answer(status, &resp.text().await.unwrap_or_default())
+    let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
+    Answer { result: answer(status, &resp.text().await.unwrap_or_default()), retry_after }
 }
 
 /// What the site's answer to a report means: delivered (with the thread, when there is one),
-/// log in first, try again later, or refused.
+/// log in first, try again later, refused, or too large to take at all.
 fn answer(status: u16, text: &str) -> Result<String, SendError> {
     let field = |name: &str| serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v[name].as_str().map(String::from));
     match status {
         200..=299 => Ok(field("url").unwrap_or_default()),
+        300..=399 => Err(SendError::Refused(format!("The site redirected this report (HTTP {status}), so it was not delivered."))),
         401 => Err(SendError::LoginRequired(field("error").unwrap_or_else(|| LOGIN_NEEDED.into()))),
+        413 => Err(SendError::TooLarge(field("error").unwrap_or_else(|| format!("The site cannot take a report this large (HTTP {status}).")))),
         429 => Err(SendError::Unreachable("The site is not taking more reports right now.".into())),
         500..=599 => Err(SendError::Unreachable(format!("The site had a problem (HTTP {status})."))),
         _ => {
             let msg = field("error").unwrap_or_else(|| text.to_string());
             Err(SendError::Refused(format!("The site did not accept this report (HTTP {status}: {}).", msg.chars().take(300).collect::<String>())))
         }
+    }
+}
+
+/// The most log lines a report keeps once the site has called it too large.
+const TRIM_LOG_LINES: usize = 60;
+
+/// Makes a report smaller for a site that calls it too large: the crash file goes first, then the
+/// log down to its last TRIM_LOG_LINES lines. False when there is nothing left to cut.
+fn trim_large(report: &mut serde_json::Value) -> bool {
+    let Some(fields) = report.as_object_mut() else { return false };
+    let mut cut = fields.remove("crash").is_some();
+    let log = fields.get("log").and_then(|v| v.as_str()).map(String::from);
+    if let Some(log) = log {
+        let lines: Vec<&str> = log.lines().collect();
+        if lines.len() > TRIM_LOG_LINES {
+            fields.insert("log".into(), serde_json::Value::String(lines[lines.len() - TRIM_LOG_LINES..].join("\n")));
+            cut = true;
+        }
+    }
+    cut
+}
+
+/// Whether a report saved earlier may go out now: only against the game build it was written
+/// for, and only when it names one. A saved report without a build cannot say what it is about,
+/// so it is never sent later against whatever is installed by then.
+fn build_matches(saved: &str, body_version: Option<&str>) -> bool {
+    !saved.is_empty() && body_version == Some(saved)
+}
+
+/// How long to wait before posting a report again: a report gets three tries in one flush, a
+/// second apart and then two, or what the site asked for in `Retry-After`. A site that names a
+/// longer wait than CAP_SECS gets no more tries in this flush: the report stays saved for the
+/// next start or login instead of the launcher hammering it. None once there is no try left.
+fn retry_delay(attempt: u32, retry_after: Option<u64>) -> Option<Duration> {
+    const CAP_SECS: u64 = 2;
+    if attempt >= 3 {
+        return None;
+    }
+    match retry_after {
+        Some(secs) if secs > CAP_SECS => None,
+        Some(secs) => Some(Duration::from_secs(secs)),
+        None => Some(Duration::from_secs((attempt as u64).min(CAP_SECS))),
+    }
+}
+
+/// Waits between two tries without holding up the rest of the launcher.
+async fn pause(secs: Duration) {
+    let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(secs)).await;
+}
+
+/// Posts a report with up to three tries: a timeout, a rate limit or a server error is worth
+/// another try after a short wait, unless the site asked to be left alone for longer than that.
+/// Anything else is the site's final answer.
+async fn send_with_retry(report: &mut serde_json::Value) -> Result<String, SendError> {
+    let mut attempt = 1;
+    loop {
+        let Answer { result, retry_after } = post_report(report).await;
+        let e = match result {
+            Ok(url) => return Ok(url),
+            Err(e) => e,
+        };
+        let wait = match retry_delay(attempt, retry_after) {
+            Some(wait) if matches!(e, SendError::Unreachable(_)) => wait,
+            _ => return Err(e),
+        };
+        eprintln!("[report] {}; trying again in {} s", e.why(), wait.as_secs());
+        pause(wait).await;
+        attempt += 1;
     }
 }
 
@@ -1484,9 +1597,9 @@ pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<S
         lab: Vec::new(),
     };
     let reason = match build(kind, game, outcome, comment) {
-        Ok(body) => {
+        Ok(mut body) => {
             // Without a login the site can only answer "log in first": skip that round trip.
-            let sent = if linked { post_report(&body).await } else { Err(SendError::LoginRequired(LOGIN_NEEDED.into())) };
+            let sent = if linked { post_report(&mut body).await.result } else { Err(SendError::LoginRequired(LOGIN_NEEDED.into())) };
             let e = match sent {
                 Ok(url) => return Ok(Submitted { sent: true, url, reason: String::new(), needs_login: false, retry: false }),
                 Err(e) => e,
@@ -1508,12 +1621,13 @@ pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<S
                     why
                 }
                 // A refused answer waits for a launcher whose report the site takes; a refused
-                // bug report would carry another log by then.
-                SendError::Refused(why) if pending.kind == "run" => {
+                // bug report would carry another log by then. A report the site calls too large
+                // after its log was cut is no different: it is not sent again as it stands.
+                SendError::Refused(why) | SendError::TooLarge(why) if pending.kind == "run" => {
                     pending.refused_by = Some(env!("CARGO_PKG_VERSION").into());
                     why
                 }
-                SendError::Refused(why) => return Err(why),
+                SendError::Refused(why) | SendError::TooLarge(why) => return Err(why),
             }
         }
         // Kept and built again on later starts; like every saved report it waits for a login.
@@ -1607,12 +1721,21 @@ pub fn other_account_reports() -> usize {
     saved_reports().iter().filter(|p| held(p, linked.as_deref(), last.as_deref(), now_secs()) == Held::OtherAccount).count()
 }
 
+/// What a flush did: how many reports got through, and how many the site found too large. Those
+/// stay saved, and the user is told instead of them quietly never arriving.
+#[derive(serde::Serialize)]
+pub struct Flushed {
+    pub sent: usize,
+    pub too_large: usize,
+}
+
 /// Try the outbox again (the UI asks once per start and once after a login); returns how many
-/// reports got through.
+/// reports got through, and how many the site found too large to take.
 #[tauri::command]
-pub async fn flush_reports() -> usize {
+pub async fn flush_reports() -> Flushed {
     let (linked, last) = linked_accounts();
     let mut sent = 0;
+    let mut too_large = 0;
     for path in outbox() {
         let discard = || { let _ = fs::remove_file(&path); };
         let Some(mut pending) = fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Pending>(&b).ok()) else { discard(); continue };
@@ -1621,15 +1744,22 @@ pub async fn flush_reports() -> usize {
             Held::Wait | Held::OtherAccount => continue,
             Held::Send => {}
         }
-        let body = match pending.report.clone() {
+        let mut body = match pending.report.clone() {
             Some(mut body) => {
                 let Some(fields) = body.as_object_mut() else { discard(); continue };
                 fields.insert("user_token".into(), user_token().into());
                 body
             }
             None => match build(pending.kind.clone(), pending.game.clone(), pending.outcome.clone(), pending.comment.clone()) {
+                // A report that names no build is not sent against one it was never written
+                // for: it is dropped, and the log says why.
+                Ok(_) if pending.build.is_empty() => {
+                    eprintln!("[report] saved {} report names no game build: dropped, so it is not sent against another", pending.kind);
+                    discard();
+                    continue;
+                }
                 // The answer was about the build installed then; a game patched since is another one.
-                Ok(body) if !pending.build.is_empty() && body["game"]["version"].as_str() != Some(pending.build.as_str()) => { discard(); continue }
+                Ok(body) if !build_matches(&pending.build, body["game"]["version"].as_str()) => { discard(); continue }
                 Ok(mut body) => {
                     body["created_at"] = iso(pending.saved_at).into();
                     if !pending.lab.is_empty() {
@@ -1641,7 +1771,7 @@ pub async fn flush_reports() -> usize {
                 Err(BuildError::Invalid(_)) => { discard(); continue }
             },
         };
-        match post_report(&body).await {
+        match send_with_retry(&mut body).await {
             Ok(_) => {
                 discard();
                 sent += 1;
@@ -1656,6 +1786,12 @@ pub async fn flush_reports() -> usize {
                 let _ = forget_link();
                 break;
             }
+            // Kept as it is, and the user is told: a report the site cannot take as it stands is
+            // not thrown away.
+            Err(SendError::TooLarge(why)) => {
+                eprintln!("[report] saved {} report is too large for the site: {why}", pending.kind);
+                too_large += 1;
+            }
             Err(SendError::Refused(why)) => {
                 eprintln!("[report] saved {} report refused: {why}", pending.kind);
                 if pending.kind == "run" {
@@ -1667,7 +1803,7 @@ pub async fn flush_reports() -> usize {
             }
         }
     }
-    sent
+    Flushed { sent, too_large }
 }
 
 /// Successful automatic reports are sent at most once per day per build; failures always.
@@ -2746,6 +2882,62 @@ mod tests {
         assert!(matches!(answer(400, r#"{"error":"bad body"}"#), Err(SendError::Refused(w)) if w.contains("bad body") && w.contains("did not accept")));
         assert!(matches!(answer(429, ""), Err(SendError::Unreachable(_))));
         assert!(matches!(answer(503, ""), Err(SendError::Unreachable(_))));
+    }
+
+    #[test]
+    fn a_report_too_large_is_its_own_answer_and_kept() {
+        assert!(matches!(answer(413, r#"{"error":"body over 256 KB"}"#), Err(SendError::TooLarge(w)) if w == "body over 256 KB"));
+        assert!(matches!(answer(413, ""), Err(SendError::TooLarge(w)) if w.contains("413")));
+        // Any other 4xx is still a plain refusal.
+        assert!(matches!(answer(422, ""), Err(SendError::Refused(_))));
+    }
+
+    #[test]
+    fn a_redirect_is_a_refusal_and_never_a_delivery() {
+        assert!(matches!(answer(302, ""), Err(SendError::Refused(w)) if w.contains("302") && w.contains("redirect")));
+        assert!(matches!(answer(307, ""), Err(SendError::Refused(w)) if w.contains("307")));
+    }
+
+    #[test]
+    fn a_report_the_site_finds_too_large_loses_its_crash_then_its_old_log() {
+        let log: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut body = serde_json::json!({ "type": "bug", "crash": "Exception: ACCESS_VIOLATION", "log": log });
+        assert!(trim_large(&mut body));
+        assert!(body.get("crash").is_none(), "the crash file goes before the log is cut");
+        let lines: Vec<&str> = body["log"].as_str().unwrap().lines().collect();
+        assert_eq!(lines.len(), TRIM_LOG_LINES);
+        assert!(lines.last().unwrap().ends_with("line 199"), "the newest lines stay");
+        // Nothing left to cut: no crash file, and the log is short enough already.
+        assert!(!trim_large(&mut body));
+        let mut short = serde_json::json!({ "type": "launch", "crash": "Exception", "log": "one\ntwo" });
+        assert!(trim_large(&mut short));
+        assert!(short.get("crash").is_none() && short["log"] == "one\ntwo");
+        assert!(!trim_large(&mut serde_json::json!({ "type": "launch" })));
+    }
+
+    #[test]
+    fn a_saved_report_naming_no_build_is_not_sent_against_one() {
+        // An empty saved build used to match every build, so the report went out anyway.
+        assert!(!build_matches("", Some("12.0.1.65432")));
+        assert!(!build_matches("", None));
+        // A game patched since the answer is another build, and a body without one is no match.
+        assert!(!build_matches("12.0.1.65432", Some("12.1.0.69933")));
+        assert!(!build_matches("12.0.1.65432", None));
+        assert!(build_matches("12.0.1.65432", Some("12.0.1.65432")));
+    }
+
+    #[test]
+    fn a_rate_limited_report_is_tried_three_times_with_a_short_capped_wait() {
+        assert_eq!(retry_delay(1, None), Some(Duration::from_secs(1)));
+        assert_eq!(retry_delay(2, None), Some(Duration::from_secs(2)));
+        // A wait the site names is honoured while it is short ...
+        assert_eq!(retry_delay(1, Some(1)), Some(Duration::from_secs(1)));
+        assert_eq!(retry_delay(1, Some(2)), Some(Duration::from_secs(2)));
+        // ... and a longer one ends the tries for this flush; the report stays saved.
+        assert_eq!(retry_delay(1, Some(30)), None);
+        // There is no fourth try.
+        assert_eq!(retry_delay(3, None), None);
+        assert_eq!(retry_delay(3, Some(1)), None);
     }
 
     fn saved(saved_at: u64, refused_by: Option<&str>, needs_login: bool, account: Option<&str>) -> Pending {

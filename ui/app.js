@@ -219,8 +219,11 @@ function showReportPublic() {
 // Reports kept until a login go out right after it, without a second preview.
 async function sendHeld() {
   try {
-    const n = await invoke("flush_reports");
-    if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`);
+    const r = (await invoke("flush_reports")) || {};
+    const n = r.sent || 0;
+    const tooLarge = r.too_large || 0;
+    if (tooLarge) status(tooLarge === 1 ? "A report saved earlier is too large for the site; it stays saved here." : `${tooLarge} reports saved earlier are too large for the site; they stay saved here.`);
+    else if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`);
   } catch (e) { console.error(e); }
 }
 
