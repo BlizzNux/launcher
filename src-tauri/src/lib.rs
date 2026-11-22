@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 mod addons;
 #[cfg(target_os = "linux")]
 mod glprobe;
+mod nav;
 #[cfg(target_os = "linux")]
 mod notify;
 mod reports;
@@ -868,6 +869,10 @@ pub fn run() {
     // WebKitGTK renders with hardware acceleration by default. If the forum view shows
     // glitches on your GPU, start with WEBKIT_DISABLE_DMABUF_RENDERER=1 to use the fallback path.
     tauri::Builder::default()
+        // The window only ever renders the bundled page, the forum, and the Turnstile frame the
+        // site's sign-up and reset pages embed; every other link goes to the user's browser
+        // (see nav.rs).
+        .plugin(nav::plugin())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|_, event| {
             #[cfg(target_os = "linux")]
@@ -938,6 +943,61 @@ pub fn run() {
                             if let Some(cm) = ctx.cookie_manager() {
                                 cm.set_accept_policy(webkit2gtk::CookieAcceptPolicy::Always);
                             }
+                        }
+                        // A link that asks for a new window (target="_blank", window.open, "open
+                        // link in new window") must not put a second webview on screen. wry
+                        // leaves new-window decisions to the app, so they land here: cancel the
+                        // window, and send http/https to the browser like any other outside
+                        // link. Everything else (about:blank, javascript:, data:) is dropped.
+                        // BLIZZNUX_NAV_DEBUG=1: print these decisions to stderr (see nav.rs).
+                        {
+                            use webkit2gtk::glib::prelude::Cast;
+                            use webkit2gtk::{
+                                NavigationPolicyDecision, NavigationPolicyDecisionExt, PolicyDecisionExt,
+                                PolicyDecisionType, URIRequestExt,
+                            };
+                            platform.inner().connect_decide_policy(|_wv, decision, kind| {
+                                if kind != PolicyDecisionType::NewWindowAction {
+                                    return false;
+                                }
+                                let Some(policy) = decision.dynamic_cast_ref::<NavigationPolicyDecision>() else {
+                                    return false;
+                                };
+                                let uri = policy
+                                    .navigation_action()
+                                    .and_then(|action| action.request())
+                                    .and_then(|request| request.uri())
+                                    .map(|uri| uri.to_string())
+                                    .unwrap_or_default();
+                                decision.ignore();
+                                let action = nav::new_window(&uri);
+                                nav::debug_new_window(action, &uri);
+                                if action == nav::Nav::External {
+                                    nav::open_in_browser(&uri);
+                                }
+                                true
+                            });
+                        }
+                        // The allow list lets the forum and the Turnstile frame through, because
+                        // they are what the embedded view shows, and any page can ask the top
+                        // document to go there. The top document must stay ours: after a load
+                        // that left it, load the app page again. This is a send-back after the
+                        // load, not a cancel — an allowed page can be on screen for the instant
+                        // before our page is restored. Only a finished load is looked at, and a
+                        // loaded app page is left alone, so the send-back cannot loop.
+                        // BLIZZNUX_NAV_DEBUG=1: print each send-back to stderr (see nav.rs).
+                        {
+                            use webkit2gtk::LoadEvent;
+                            platform.inner().connect_load_changed(|wv, event| {
+                                if event != LoadEvent::Finished {
+                                    return;
+                                }
+                                let uri = WebViewExt::uri(wv).map(|uri| uri.to_string()).unwrap_or_default();
+                                if !nav::is_app_page(&uri) {
+                                    nav::debug_send_back(&uri);
+                                    WebViewExt::load_uri(wv, nav::APP_PAGE);
+                                }
+                            });
                         }
                         // BLIZZNUX_NET_DEBUG=1: print the site's console and every request status to stderr.
                         if std::env::var_os("BLIZZNUX_NET_DEBUG").is_some() {
