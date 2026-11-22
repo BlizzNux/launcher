@@ -1253,8 +1253,7 @@ fn live(kind: &str, game: Option<&str>, outcome: Option<&str>) -> Parts {
 }
 
 /// Fill a report body from the request and the machine's part of it. Every field here is in
-/// REPORTING.md, and the contract test pins this function to that list: a field added here
-/// without a line there fails the build.
+/// REPORTING.md.
 fn assemble(kind: &str, outcome: Option<&str>, comment: Option<&str>, parts: Parts) -> Result<serde_json::Value, BuildError> {
     let invalid = |why: &str| BuildError::Invalid(why.into());
     if !matches!(kind, "bug" | "run" | "launch") {

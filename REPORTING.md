@@ -58,7 +58,7 @@ local stub); the default is the URL above.
   "comment": "free text from the user, may be empty",
   "lab": ["wow64"],             // optional: the Labs settings that were on, absent when none was
   "log": "last lines of the launcher log (repeats folded as \"(×N) …\"), problem reports only, paths scrubbed",
-  "crash": "WoW's crash file, problem reports about WoW only, at most 12 KB, scrubbed like log"
+  "crash": "WoW's crash file, problem runs about WoW only, at most 12 KB, scrubbed like log"
 }
 ```
 
@@ -108,16 +108,19 @@ tracked"}` without a `url`, and the launcher treats any `2xx` as delivered.
 `outcome` is absent for bug reports. `log` is attached to problem reports only: `bug` and `run`
 with `issues` or `broken` (the last 200 lines), and a `failed` launch (the last 120 lines). It
 is absent for `perfect` and `ok` runs and `ok` launches. Logs on `issues` and `broken` runs are
-shown publicly in the game's thread, as failed launches already show theirs; the launcher's
-preview says so before the user sends.
+shown publicly in the game's thread, as failed launches already show theirs; for World of
+Warcraft the crash file, when there is one, is posted with the log. The launcher's preview says
+so before the user sends.
 
-`crash` rides along with `log` on problem reports about World of Warcraft: a `bug` for a WoW
-game, and a `run` with `issues` or `broken`. It is the newest `.txt` file in that version's
-`Errors` folder when one was written in the last six hours, as its last 150 lines cut to at most
-12 KB. It is scrubbed like `log` (home paths become `~`), and its Windows user and computer names
-are removed. It is absent when there is no fresh crash file, for other games, for a bug report
-that is not tied to a game, and on `launch` reports (they have no game). The site keeps it
-together with the log: on a crash it is the part that says what went wrong.
+`crash` rides along with `log` on a `run` report with `issues` or `broken` for World of
+Warcraft. It is the newest `.txt` file in that version's `Errors` folder when one was written in
+the last six hours, as its last 150 lines cut to at most 12 KB. It is scrubbed like `log` (home
+paths become `~`), and its Windows user and computer names are removed. It is absent when there
+is no fresh crash file, for other games, and on `launch` reports (they have no game). The
+in-app bug report ("Report a problem") has no game, and neither has the automatic one a failed
+launch sends, so neither sends one. The site shows the crash file in the report post and does
+not store it; the site change for it (site PR 177) must be live first, and until then the site
+ignores the field.
 
 Report types and when the launcher sends them. Every type needs a logged-in launcher: the
 automatic ones are only sent by a linked launcher anyway, and a report the user sends while
