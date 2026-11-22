@@ -949,6 +949,7 @@ pub fn run() {
                         // leaves new-window decisions to the app, so they land here: cancel the
                         // window, and send http/https to the browser like any other outside
                         // link. Everything else (about:blank, javascript:, data:) is dropped.
+                        // BLIZZNUX_NAV_DEBUG=1: print these decisions to stderr (see nav.rs).
                         {
                             use webkit2gtk::glib::prelude::Cast;
                             use webkit2gtk::{
@@ -969,7 +970,9 @@ pub fn run() {
                                     .map(|uri| uri.to_string())
                                     .unwrap_or_default();
                                 decision.ignore();
-                                if nav::new_window(&uri) == nav::Nav::External {
+                                let action = nav::new_window(&uri);
+                                nav::debug_new_window(action, &uri);
+                                if action == nav::Nav::External {
                                     nav::open_in_browser(&uri);
                                 }
                                 true
@@ -982,6 +985,7 @@ pub fn run() {
                         // load, not a cancel — an allowed page can be on screen for the instant
                         // before our page is restored. Only a finished load is looked at, and a
                         // loaded app page is left alone, so the send-back cannot loop.
+                        // BLIZZNUX_NAV_DEBUG=1: print each send-back to stderr (see nav.rs).
                         {
                             use webkit2gtk::LoadEvent;
                             platform.inner().connect_load_changed(|wv, event| {
@@ -990,6 +994,7 @@ pub fn run() {
                                 }
                                 let uri = WebViewExt::uri(wv).map(|uri| uri.to_string()).unwrap_or_default();
                                 if !nav::is_app_page(&uri) {
+                                    nav::debug_send_back(&uri);
                                     WebViewExt::load_uri(wv, nav::APP_PAGE);
                                 }
                             });

@@ -18,6 +18,45 @@ pub(crate) enum Nav {
     Refuse,
 }
 
+impl Nav {
+    /// The word the debug log prints for a decision.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "Allow",
+            Self::External => "External",
+            Self::Refuse => "Refuse",
+        }
+    }
+}
+
+/// BLIZZNUX_NAV_DEBUG=1: print the navigation decisions and the top-document send-backs on stderr,
+/// one stable line each, so a run that misbehaves in the embedded view can be read back without a
+/// debugger. Unset, each of the three below costs one getenv and prints nothing.
+fn debug_on() -> bool {
+    std::env::var_os("BLIZZNUX_NAV_DEBUG").is_some()
+}
+
+/// `[nav] External https://…`: what the webview asked for and what was done with it.
+pub(crate) fn debug_decision(decision: Nav, uri: &str) {
+    if debug_on() {
+        eprintln!("[nav] {} {uri}", decision.label());
+    }
+}
+
+/// `[nav] new-window External https://…`: a link that asked for a window of its own.
+pub(crate) fn debug_new_window(decision: Nav, uri: &str) {
+    if debug_on() {
+        eprintln!("[nav] new-window {} {uri}", decision.label());
+    }
+}
+
+/// `[nav] send-back https://…`: the top document was not ours and is being put back.
+pub(crate) fn debug_send_back(uri: &str) {
+    if debug_on() {
+        eprintln!("[nav] send-back {uri}");
+    }
+}
+
 /// The hosts a frame may show besides our own page. blizznux.com is the forum; the Turnstile host
 /// is the widget the site embeds in a frame on its sign-up and password-reset pages, which cannot
 /// be submitted without it. (Signing in does not use it: `flectar-turnstile` has signin off.)
@@ -104,13 +143,17 @@ pub(crate) fn open_in_browser(uri: &str) {
 /// rule as the page around it. Returning false cancels the navigation.
 pub(crate) fn plugin() -> TauriPlugin<tauri::Wry> {
     Builder::new("nav-allowlist")
-        .on_navigation(|_webview, url| match navigation(url.as_str()) {
-            Nav::Allow => true,
-            Nav::External => {
-                open_in_browser(url.as_str());
-                false
+        .on_navigation(|_webview, url| {
+            let decision = navigation(url.as_str());
+            debug_decision(decision, url.as_str());
+            match decision {
+                Nav::Allow => true,
+                Nav::External => {
+                    open_in_browser(url.as_str());
+                    false
+                }
+                Nav::Refuse => false,
             }
-            Nav::Refuse => false,
         })
         .build()
 }
