@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; frame-src https://blizznux.com https://challenges.cloudflare.com; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: https://blizznux.com https://uploads.blizznux.com; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {
