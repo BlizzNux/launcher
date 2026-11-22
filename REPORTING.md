@@ -140,12 +140,16 @@ none to show. The launcher treats any `2xx` as delivered. `429` when rate-limite
 "…" }` for a malformed body, and `401 {"error": "Log in to BlizzNux to send reports", "code":
 "login_required"}` for a report without a valid `user_token` (every type, including a failed
 launch). The launcher reads the `error` text from the answer and shows it; it treats `401` as
-"log in first", `429` and `5xx` as "try later", and any other `4xx` as a refusal.
+"log in first", `429` and `5xx` as "try later" (three tries in one flush, with a `Retry-After`
+of up to two seconds waited out; a longer ask ends the tries for that flush and the report stays
+saved for the next start or login), `413` as "too large" (see below), and any other `4xx` as a
+refusal. It does not follow a redirect: one is a refusal, not a delivery.
 
 ### Reports that could not be delivered
 
-A `run` report without `game.version` is never sent: the launcher tells the user it cannot
-read the game's build instead. A report the user chose to send (a prompt answer or "Report a
+A `run` report without `game.version` is never sent and is not saved either: the launcher tells
+the user the game build could not be read, that the report was not saved, and to try again after
+the game has started once. A report the user chose to send (a prompt answer or "Report a
 problem") that does not get through is kept on disk, without the account token, for up to a
 week:
 
@@ -163,8 +167,15 @@ week:
   file that names no account (saved while logged out, or before accounts were recorded) is sent
   only while no other account's link was forgotten on this install (`LAST_USERNAME` empty or the
   same account), so it cannot go out as whoever linked after someone else;
+- a report that has to be built again goes out only for the game build it was written for; one
+  saved by an older launcher that names no build is dropped, with a log line, rather than sent
+  against whatever is installed later;
 - no answer, `429` or `5xx`: the same body is sent again on later starts, so `created_at` can
   be days older than the arrival and a body whose first answer got lost can arrive twice;
+- `413`: the report is not thrown away. A bug report loses its crash file, then all but its last
+  60 log lines, and is sent once more; one the site still finds too large stays on disk, as the
+  version that was cut down, and the start or login that tried it says so. A report the user
+  sends directly is cut the same way;
 - any other `4xx` on a prompt answer: the site did not accept the report. The answer is kept
   and built afresh by the next launcher version, unless the game was patched in between; a
   refused bug report is not kept.
