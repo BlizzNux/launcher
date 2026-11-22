@@ -100,6 +100,11 @@ pub(crate) fn navigation(uri: &str) -> Nav {
         return Nav::Allow;
     }
     match url.scheme() {
+        // An iframe with `srcdoc` gets its markup from the page that created it: local content,
+        // not another host. Turnstile builds its challenge that way, and refusing it leaves the
+        // widget spinning. Frame content only: `own_page` does not take it, so a top-level
+        // about:srcdoc is still sent back by the `load-changed` guard.
+        "about" if url.path() == "srcdoc" => Nav::Allow,
         "https" if url.port_or_known_default() == Some(443) => match url.host_str() {
             // Hosts compare case-insensitively, as DNS does; `Url` has already lowercased this one.
             Some(host) if FRAME_HOSTS.contains(&host) => Nav::Allow,
@@ -171,9 +176,20 @@ mod tests {
             "http://tauri.localhost/",
             "https://tauri.localhost/index.html",
             "about:blank",
+            // Same blank document, only a fragment on it.
+            "about:blank#x",
         ] {
             assert_eq!(navigation(uri), Nav::Allow, "{uri}");
         }
+    }
+
+    #[test]
+    fn srcdoc_frames_are_local_content() {
+        // Turnstile builds its challenge in an about:srcdoc frame, whose markup comes from the
+        // page that created it. Refusing it leaves the sign-up widget spinning.
+        assert_eq!(navigation("about:srcdoc"), Nav::Allow);
+        // It is frame content, not the app page: a top-level about:srcdoc is sent back.
+        assert!(!is_app_page("about:srcdoc"));
     }
 
     #[test]
@@ -231,6 +247,8 @@ mod tests {
             "mailto:someone@example.com",
             "vbscript:msgbox(1)",
             "tauri://elsewhere/index.html",
+            // Only about:blank and about:srcdoc are content; the rest of about: is browser-internal.
+            "about:config",
         ] {
             assert_eq!(navigation(uri), Nav::Refuse, "{uri}");
         }
@@ -261,6 +279,8 @@ mod tests {
             "http://tauri.localhost/",
             "https://tauri.localhost/x",
             "about:blank",
+            // The blank document with a fragment on it is still the blank document.
+            "about:blank#x",
         ] {
             assert!(is_app_page(uri), "{uri}");
         }
@@ -270,6 +290,9 @@ mod tests {
             "https://evil.example/",
             "https://tauri.localhost.evil.example/",
             "javascript:alert(1)",
+            // Frame content, not the app page: the guard puts the top document back.
+            "about:srcdoc",
+            "about:config",
             "",
         ] {
             assert!(!is_app_page(uri), "{uri}");
