@@ -119,8 +119,7 @@ paths become `~`), and its Windows user and computer names are removed. It is ab
 is no fresh crash file, for other games, and on `launch` reports (they have no game). The
 in-app bug report ("Report a problem") has no game, and neither has the automatic one a failed
 launch sends, so neither sends one. The site shows the crash file in the report post and does
-not store it; the site change for it (site PR 177) must be live first, and until then the site
-ignores the field.
+not store it.
 
 Report types and when the launcher sends them. Every type needs a logged-in launcher: the
 automatic ones are only sent by a linked launcher anyway, and a report the user sends while
