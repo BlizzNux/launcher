@@ -611,6 +611,63 @@ fn plan_steps(check: &str, family: &str, vendors: &[&str], multilib: bool) -> Op
     Some(steps)
 }
 
+/// True when pkexec cannot run the wrapper where it is. An AppImage keeps it on the image's FUSE
+/// mount, which only the user who mounted the image can read: root cannot start it from there.
+fn needs_staged_helper(path: &Path, appimage: Option<&std::ffi::OsStr>, appdir: Option<&std::ffi::OsStr>) -> bool {
+    let set = |v: Option<&std::ffi::OsStr>| v.map_or(false, |v| !v.is_empty());
+    // The mount point is a name of its own, /tmp/.mount_<something>, so this is no path prefix test.
+    set(appimage) || set(appdir) || path.to_string_lossy().starts_with("/tmp/.mount_")
+}
+
+/// Where a copy of the wrapper is put for pkexec: the user's runtime directory, a tmpfs only this
+/// user can read, or the temporary directory when the session has none.
+fn staging_base() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        Some(d) if d.is_dir() => d,
+        _ => std::env::temp_dir(),
+    }
+}
+
+/// A copy of the wrapper for pkexec, in its own directory, taken away again when this is dropped.
+struct StagedHelper {
+    dir: PathBuf,
+    path: PathBuf,
+}
+
+impl Drop for StagedHelper {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Copies the wrapper into a fresh private directory under `base`, for root to run: a 0700 folder
+/// holding a 0500 copy. The name carries the pid and the time, so two calls never share one, and a
+/// name already taken is simply tried again.
+fn stage_helper(base: &Path, script: &Path) -> Result<StagedHelper, String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for attempt in 0..8 {
+        let dir = base.join(format!("blizznux-fix-{}-{stamp}-{attempt}", std::process::id()));
+        match fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+        let path = dir.join("blizznux-run");
+        let copied = fs::copy(script, &path)
+            .and_then(|_| fs::set_permissions(&path, fs::Permissions::from_mode(0o500)));
+        if let Err(e) = copied {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(e.to_string());
+        }
+        return Ok(StagedHelper { dir, path });
+    }
+    Err("could not find a free name for the copy of blizznux-run".into())
+}
+
 /// The commands a plan would run, as bin/blizznux-run prints them: the one place that turns an id
 /// into a command, so what the user reads is exactly what fix_apply would run.
 fn plan_lines(app: &AppHandle, check: &str) -> Option<Vec<String>> {
@@ -649,9 +706,19 @@ async fn fix_apply(app: AppHandle, check: String) -> Result<String, String> {
         return Err("pkexec (polkit) is not available; run the commands shown in a terminal with sudo".into());
     }
     let script = script_path(&app).ok_or("blizznux-run not found (run install.sh)")?;
+    let appimage = std::env::var_os("APPIMAGE");
+    let appdir = std::env::var_os("APPDIR");
     tauri::async_runtime::spawn_blocking(move || {
+        // Inside an AppImage root cannot read the mount the wrapper is on: it gets a private copy
+        // instead, which is gone again when this call ends, however it ends.
+        let staged = if needs_staged_helper(&script, appimage.as_deref(), appdir.as_deref()) {
+            Some(stage_helper(&staging_base(), &script)?)
+        } else {
+            None
+        };
+        let run = staged.as_ref().map_or(script.as_path(), |s| s.path.as_path());
         let out = host_command("pkexec")
-            .arg(&script)
+            .arg(run)
             .arg("fix")
             .args(&ids)
             .stdin(Stdio::null())
@@ -1114,5 +1181,51 @@ mod lab_tests {
         assert!(!table.is_empty(), "the wrapper's fix table is empty");
         assert_eq!(table.len(), 20, "the wrapper's fix table: {table:?}");
         assert_eq!(table, all_plan_ids());
+    }
+
+    // pkexec runs the wrapper where it is, except where root cannot read it: an AppImage's FUSE
+    // mount, which is private to the user who mounted the image.
+    #[test]
+    fn a_wrapper_root_can_read_is_run_where_it_is() {
+        use std::ffi::OsStr;
+        let installed = Path::new("/usr/lib/BlizzNux/_up_/bin/blizznux-run");
+        assert!(!needs_staged_helper(installed, None, None));
+        assert!(!needs_staged_helper(&home().join("bin").join("blizznux-run"), None, None));
+        // What the app sees inside an AppImage, whether or not the path says so.
+        assert!(needs_staged_helper(
+            Path::new("/tmp/.mount_BlizzNuxAbC123/up/bin/blizznux-run"),
+            None,
+            None
+        ));
+        assert!(needs_staged_helper(installed, Some(OsStr::new("/tmp/.mount_BlizzNuxAbC123/BlizzNux.AppImage")), None));
+        assert!(needs_staged_helper(installed, None, Some(OsStr::new("/tmp/.mount_BlizzNuxAbC123/usr"))));
+        // An empty value says nothing.
+        assert!(!needs_staged_helper(installed, Some(OsStr::new("")), Some(OsStr::new(""))));
+    }
+
+    #[test]
+    fn a_staged_wrapper_is_private_and_goes_away_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("blizznux-stage-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let script = base.join("blizznux-run");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        let (dir, other) = {
+            let staged = stage_helper(&base, &script).unwrap();
+            let dir = staged.dir.clone();
+            assert!(dir.starts_with(&base), "{} is not under {}", dir.display(), base.display());
+            assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(staged.path.file_name().unwrap(), "blizznux-run");
+            assert_eq!(fs::metadata(&staged.path).unwrap().permissions().mode() & 0o777, 0o500);
+            assert_eq!(fs::read_to_string(&staged.path).unwrap(), "#!/bin/sh\n");
+            // A second copy gets a directory of its own.
+            let other = stage_helper(&base, &script).unwrap();
+            assert_ne!(other.dir, dir);
+            (dir, other.dir.clone())
+        };
+        assert!(!dir.exists(), "the staged folder is still there: {}", dir.display());
+        assert!(!other.exists(), "the staged folder is still there: {}", other.display());
+        let _ = fs::remove_dir_all(&base);
     }
 }
