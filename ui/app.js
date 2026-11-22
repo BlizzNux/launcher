@@ -137,8 +137,10 @@ async function pollLogin() {
       next = pollDelay();
     }
   } catch (e) {
-    pairing = false;
+    // A question that got no answer (the site restarting, a network that blinked) is not the end
+    // of the pairing: count it like a busy answer and ask again, until the failure budget runs out.
     console.error(e);
+    if (++pollFailures < POLL_MAX_FAILURES) next = pollDelay(); else pairing = false;
   } finally {
     pollBusy = false;
   }
@@ -453,8 +455,10 @@ async function closeLeftoversAndRetry() {
   btn.disabled = false;
 }
 
-async function refreshState(openSetupIfMissing = false) {
-  try { state = await invoke("install_state"); } catch (e) { console.error(e); return state; }
+// `throwOnError` is for the one caller that must tell "not there yet" from "the question failed":
+// the install poll. Everywhere else the last state known is the best answer there is.
+async function refreshState(openSetupIfMissing = false, throwOnError = false) {
+  try { state = await invoke("install_state"); } catch (e) { console.error(e); if (throwOnError) throw e; return state; }
   refreshAddonsButton();
   showSession();
   if (openSetupIfMissing && !state.installed) { showPanel("setup"); loadChecks(); }
@@ -462,14 +466,19 @@ async function refreshState(openSetupIfMissing = false) {
 }
 
 async function launch(game) {
+  const btn = $("#launch");
   if (!state.installed) { showPanel("setup"); loadChecks(); return; }
-  if (session.battlenet) { status(session.game ? `${session.game} is running.` : "Battle.net is already running."); return; }
+  if (session.battlenet) { btn.disabled = false; status(session.game ? `${session.game} is running.` : "Battle.net is already running."); return; }
   offerRetry(false);
+  // The button state only: the Rust side refuses a second launch itself (begin_launch), so a click
+  // that still gets through cannot start a second Battle.net. Disabling it keeps the bar honest
+  // while the launch is in flight and is undone by launch-result, or right here if Rust says no.
+  btn.disabled = true;
   status(game ? `Starting Battle.net and launching ${game}…` : "Starting Battle.net…");
   try {
     await invoke("launch", { game: game || null });
     status(game ? `Battle.net is starting ${game}.` : "Battle.net is starting.");
-  } catch (e) { status(String(e), true); }
+  } catch (e) { status(String(e), true); btn.disabled = false; }
 }
 
 async function showPanel(name) {
@@ -611,9 +620,8 @@ function initTitlebar() {
 }
 
 async function init() {
-  const version = await invoke("app_version");
-  $("#version").textContent = version;
-  $("#title-version").textContent = `v${version}`;
+  // Everything the user can press is wired before the first await: an invoke that fails or never
+  // answers must leave a window that still works, not a bar whose buttons do nothing.
   initTitlebar();
   $("#launch").onclick = () => launch();
   $("#panel").addEventListener("click", (e) => { if (e.target === $("#panel")) hidePanel(); });
@@ -657,6 +665,7 @@ async function init() {
   window.__TAURI__.event.listen("launch-progress", (e) => status(String(e.payload)));
   $("#retry-launch").onclick = closeLeftoversAndRetry;
   window.__TAURI__.event.listen("launch-result", (e) => {
+    $("#launch").disabled = false;   // the launch is over either way; the session state says what runs
     const p = e.payload || {};
     offerRetry(!p.ok && p.leftovers > 0);
     if (p.ok) return;
@@ -677,25 +686,50 @@ async function init() {
     try { await invoke("install"); } catch (e) { $("#setup-status").textContent = String(e); showLog(false); return; }
     const started = Date.now();
     const poll = setInterval(async () => {
-      const s = await refreshState();
+      let s;
+      // A poll that fails (the launcher side went away) is not "not installed yet": stop asking
+      // and say so, instead of ticking at nothing for twenty minutes.
+      try { s = await refreshState(false, true); } catch (e) {
+        clearInterval(poll);
+        $("#setup-status").textContent = `Install check failed: ${e}`;
+        showLog(false);
+        return;
+      }
       if (s.installed) { clearInterval(poll); showLog(false); $("#setup-status").textContent = "Battle.net is installed."; setTimeout(hidePanel, 1200); }
       else if (Date.now() - started > 20 * 60 * 1000) { clearInterval(poll); $("#setup-status").textContent = "Still not installed. The log above shows what happened."; }
     }, 4000);
   };
-  loadConfig();
+  watchStaleness();   // listeners on the window, so it is part of the wiring above
+
+  // Reading the version and the config comes after the wiring and each in its own try/catch: a
+  // failure costs a line in the bar, not the whole window.
+  let version = "";
+  try {
+    version = await invoke("app_version");
+    $("#version").textContent = version;
+    $("#title-version").textContent = `v${version}`;
+  } catch (e) {
+    console.error(e);
+    status("The launcher version could not be read; updates are not checked this time.", true);
+  }
+  // The comments and checkboxes keep their defaults; saving them still works.
+  try { await loadConfig(); } catch (e) {
+    console.error(e);
+    status(`Settings could not be loaded: ${e}`, true);
+  }
+
   try { showSession(await invoke("session_state")); } catch (e) { console.error(e); }
   const st = await refreshState(true);
   const acct = await refreshAccount();
   // One navigation only: two loads racing before the session cookie exists leave the page with a
   // CSRF token that does not match the stored session, and the first login attempt fails.
   if (st.installed && !acct.linked) startLogin(); else { showSite(FORUM); checkLink("start"); }
-  checkUpdate(version);
+  if (version) checkUpdate(version);
   checkBattlenet();
   if (acct.linked) sendHeld().then(showHeldElsewhere);
   else invoke("waiting_reports").then((n) => { if (n) status(n === 1 ? "1 report is waiting for you to log in." : `${n} reports are waiting for you to log in.`); }).catch(() => {}).then(showHeldElsewhere);
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
   setInterval(() => checkLink("timer"), LINK_CHECK_EVERY_MS);   // a link ended from another browser is noticed without a restart
-  watchStaleness();
 }
 
 init();
