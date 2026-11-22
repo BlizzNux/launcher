@@ -147,8 +147,9 @@ refusal. It does not follow a redirect: one is a refusal, not a delivery.
 
 ### Reports that could not be delivered
 
-A `run` report without `game.version` is never sent: the launcher tells the user it cannot
-read the game's build instead. A report the user chose to send (a prompt answer or "Report a
+A `run` report without `game.version` is never sent and is not saved either: the launcher tells
+the user the game build could not be read, that the report was not saved, and to try again after
+the game has started once. A report the user chose to send (a prompt answer or "Report a
 problem") that does not get through is kept on disk, without the account token, for up to a
 week:
 
@@ -166,14 +167,15 @@ week:
   file that names no account (saved while logged out, or before accounts were recorded) is sent
   only while no other account's link was forgotten on this install (`LAST_USERNAME` empty or the
   same account), so it cannot go out as whoever linked after someone else;
-- a kept report that has to be built again goes out only for the game build it was written for;
-  one that names no build (the launcher could not read it then) is dropped with a log line
-  rather than sent against whatever is installed later;
+- a report that has to be built again goes out only for the game build it was written for; one
+  saved by an older launcher that names no build is dropped, with a log line, rather than sent
+  against whatever is installed later;
 - no answer, `429` or `5xx`: the same body is sent again on later starts, so `created_at` can
   be days older than the arrival and a body whose first answer got lost can arrive twice;
 - `413`: the report is not thrown away. A bug report loses its crash file, then all but its last
-  60 log lines, and is sent once more; one the site still finds too large stays on disk and the
-  start or login that tried it says so. A report the user sends directly is cut the same way;
+  60 log lines, and is sent once more; one the site still finds too large stays on disk, as the
+  version that was cut down, and the start or login that tried it says so. A report the user
+  sends directly is cut the same way;
 - any other `4xx` on a prompt answer: the site did not accept the report. The answer is kept
   and built afresh by the next launcher version, unless the game was patched in between; a
   refused bug report is not kept.

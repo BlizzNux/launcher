@@ -1357,6 +1357,26 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
     assemble(&kind, outcome.as_deref(), comment.as_deref(), parts)
 }
 
+/// What a request does with what `build` produced: send the body, or tell the user why nothing
+/// was built. A report that cannot be built is never kept: one that names no game build would be
+/// dropped by the next flush anyway, so saving it would only promise something that cannot come.
+#[derive(Debug, PartialEq)]
+enum BuildOutcome {
+    Send(serde_json::Value),
+    Error(String),
+}
+
+fn build_outcome(built: Result<serde_json::Value, BuildError>) -> BuildOutcome {
+    match built {
+        Ok(body) => BuildOutcome::Send(body),
+        Err(BuildError::UnknownBuild(_)) => BuildOutcome::Error(UNKNOWN_BUILD_NOT_SAVED.into()),
+        Err(BuildError::Invalid(why)) => BuildOutcome::Error(why),
+    }
+}
+
+/// What the user is told when the launcher cannot tell which build a report is about.
+const UNKNOWN_BUILD_NOT_SAVED: &str = "The game build could not be read, so this report was not saved. Try again after the game has started once.";
+
 /// Why a report was not delivered: the site refused this report, the site takes reports only
 /// from a logged-in launcher, the site could not take any right now (offline, rate limit,
 /// server trouble), which is worth another try later, or the report is too large for it even
@@ -1576,8 +1596,8 @@ pub struct Submitted {
 
 /// Send a report the user asked for. Every report needs a logged-in launcher: without one the
 /// report is kept and goes out once the user logs in. One that cannot go out now for another
-/// reason (site unreachable or refusing, game build unknown) is kept in the outbox and tried
-/// again on later starts.
+/// reason (site unreachable or refusing) is kept in the outbox and tried again on later starts.
+/// One that cannot be built at all is not kept: the user is told why instead.
 #[tauri::command]
 pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<Submitted, String> {
     let linked = !user_token().is_empty();
@@ -1596,43 +1616,40 @@ pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<S
         account: linked_account(),
         lab: Vec::new(),
     };
-    let reason = match build(kind, game, outcome, comment) {
-        Ok(mut body) => {
-            // Without a login the site can only answer "log in first": skip that round trip.
-            let sent = if linked { post_report(&mut body).await.result } else { Err(SendError::LoginRequired(LOGIN_NEEDED.into())) };
-            let e = match sent {
-                Ok(url) => return Ok(Submitted { sent: true, url, reason: String::new(), needs_login: false, retry: false }),
-                Err(e) => e,
-            };
-            pending.lab = body["lab"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-            pending.build = body["game"]["version"].as_str().unwrap_or_default().to_string();
-            match e {
-                SendError::LoginRequired(why) => {
-                    // A launcher that thought it was logged in holds a link the site has ended.
-                    if linked {
-                        forget_link()?;
-                    }
-                    pending.needs_login = true;
-                    pending.report = Some(without_token(body));
-                    why
-                }
-                SendError::Unreachable(why) => {
-                    pending.report = Some(without_token(body));
-                    why
-                }
-                // A refused answer waits for a launcher whose report the site takes; a refused
-                // bug report would carry another log by then. A report the site calls too large
-                // after its log was cut is no different: it is not sent again as it stands.
-                SendError::Refused(why) | SendError::TooLarge(why) if pending.kind == "run" => {
-                    pending.refused_by = Some(env!("CARGO_PKG_VERSION").into());
-                    why
-                }
-                SendError::Refused(why) | SendError::TooLarge(why) => return Err(why),
+    let mut body = match build_outcome(build(kind, game, outcome, comment)) {
+        BuildOutcome::Send(body) => body,
+        BuildOutcome::Error(why) => return Err(why),
+    };
+    // Without a login the site can only answer "log in first": skip that round trip.
+    let sent = if linked { post_report(&mut body).await.result } else { Err(SendError::LoginRequired(LOGIN_NEEDED.into())) };
+    let e = match sent {
+        Ok(url) => return Ok(Submitted { sent: true, url, reason: String::new(), needs_login: false, retry: false }),
+        Err(e) => e,
+    };
+    pending.lab = body["lab"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    pending.build = body["game"]["version"].as_str().unwrap_or_default().to_string();
+    let reason = match e {
+        SendError::LoginRequired(why) => {
+            // A launcher that thought it was logged in holds a link the site has ended.
+            if linked {
+                forget_link()?;
             }
+            pending.needs_login = true;
+            pending.report = Some(without_token(body));
+            why
         }
-        // Kept and built again on later starts; like every saved report it waits for a login.
-        Err(BuildError::UnknownBuild(why)) => why,
-        Err(BuildError::Invalid(why)) => return Err(why),
+        SendError::Unreachable(why) => {
+            pending.report = Some(without_token(body));
+            why
+        }
+        // A refused answer waits for a launcher whose report the site takes; a refused
+        // bug report would carry another log by then. A report the site calls too large
+        // after its log was cut is no different: it is not sent again as it stands.
+        SendError::Refused(why) | SendError::TooLarge(why) if pending.kind == "run" => {
+            pending.refused_by = Some(env!("CARGO_PKG_VERSION").into());
+            why
+        }
+        SendError::Refused(why) | SendError::TooLarge(why) => return Err(why),
     };
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     save_pending(&outbox_dir().join(format!("{nanos}.json")), &pending)?;
@@ -1645,6 +1662,12 @@ fn without_token(mut body: serde_json::Value) -> serde_json::Value {
         fields.remove("user_token");
     }
     body
+}
+
+/// What stays on disk for a report the site found too large: the body as it was posted, so a
+/// report cut down for the site is stored cut down, without the account token.
+fn keep_posted(pending: &mut Pending, body: serde_json::Value) {
+    pending.report = Some(without_token(body));
 }
 
 /// What a start, or a fresh login, does with a saved report.
@@ -1787,9 +1810,12 @@ pub async fn flush_reports() -> Flushed {
                 break;
             }
             // Kept as it is, and the user is told: a report the site cannot take as it stands is
-            // not thrown away.
+            // not thrown away. The body as posted (cut down, when it was) is what stays saved,
+            // so the next start sends the trimmed one instead of the full one again.
             Err(SendError::TooLarge(why)) => {
                 eprintln!("[report] saved {} report is too large for the site: {why}", pending.kind);
+                keep_posted(&mut pending, body);
+                let _ = save_pending(&path, &pending);
                 too_large += 1;
             }
             Err(SendError::Refused(why)) => {
@@ -2924,6 +2950,31 @@ mod tests {
         assert!(!build_matches("12.0.1.65432", Some("12.1.0.69933")));
         assert!(!build_matches("12.0.1.65432", None));
         assert!(build_matches("12.0.1.65432", Some("12.0.1.65432")));
+    }
+
+    #[test]
+    fn a_report_kept_as_too_large_is_stored_trimmed_and_without_the_token() {
+        let log: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut body = serde_json::json!({ "type": "bug", "user_token": "secret", "crash": "Exception: ACCESS_VIOLATION", "log": log });
+        assert!(trim_large(&mut body));
+        let mut pending = saved(1, None, false, Some("karl"));
+        keep_posted(&mut pending, body);
+        let stored = pending.report.expect("the posted body is what stays saved");
+        assert!(stored.get("user_token").is_none(), "the token never goes to disk");
+        assert!(stored.get("crash").is_none());
+        assert_eq!(stored["log"].as_str().unwrap().lines().count(), TRIM_LOG_LINES);
+        assert!(stored["log"].as_str().unwrap().ends_with("line 199"), "the newest lines are kept");
+    }
+
+    #[test]
+    fn a_report_with_no_game_build_is_not_saved() {
+        let got = build_outcome(Err(BuildError::UnknownBuild("the launcher cannot tell which build of World of Warcraft is installed".into())));
+        // Nothing is kept: the old code saved it and said so, and the next flush dropped it.
+        assert_eq!(got, BuildOutcome::Error(UNKNOWN_BUILD_NOT_SAVED.into()));
+        assert!(UNKNOWN_BUILD_NOT_SAVED.contains("not saved") && UNKNOWN_BUILD_NOT_SAVED.contains("the game has started once"));
+        // Other build errors reach the user as they are, and a body that builds is sent.
+        assert_eq!(build_outcome(Err(BuildError::Invalid("kind must be bug, run or launch".into()))), BuildOutcome::Error("kind must be bug, run or launch".into()));
+        assert!(matches!(build_outcome(Ok(serde_json::json!({ "type": "bug" }))), BuildOutcome::Send(_)));
     }
 
     #[test]
