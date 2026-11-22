@@ -160,9 +160,9 @@ week:
   regard to case: with another account linked it stays on disk, unchanged and never sent as the
   new one, until that account is linked again or the week is up, and a start says how many such
   reports are waiting. An account renamed on the site therefore keeps its held reports held. A
-  file written before accounts were recorded is sent only while no other account's link was
-  forgotten on this install (`LAST_USERNAME` empty or the same account), so it cannot go out as
-  whoever linked after someone else;
+  file that names no account (saved while logged out, or before accounts were recorded) is sent
+  only while no other account's link was forgotten on this install (`LAST_USERNAME` empty or the
+  same account), so it cannot go out as whoever linked after someone else;
 - no answer, `429` or `5xx`: the same body is sent again on later starts, so `created_at` can
   be days older than the arrival and a body whose first answer got lost can arrive twice;
 - any other `4xx` on a prompt answer: the site did not accept the report. The answer is kept
