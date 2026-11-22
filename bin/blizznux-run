@@ -259,6 +259,7 @@ fetch_umu() {
 	# go with it: a failed first run must not leave another one behind. The path is put into the
 	# trap now: a local is gone by the time an exit trap runs, and set -u would then make the
 	# cleanup itself fail.
+	# shellcheck disable=SC2064  # expanding now is the point: $tmp is gone when the trap fires
 	trap "rm -rf $(printf '%q' "$tmp")" EXIT
 	curl -fL --retry 3 -sS -o "$tmp/umu.tar" "$UMU_URL" || die "could not download umu-launcher"
 	echo "$UMU_SHA256  $tmp/umu.tar" | sha256sum -c --quiet - || die "the umu-launcher download is damaged (checksum mismatch)"
