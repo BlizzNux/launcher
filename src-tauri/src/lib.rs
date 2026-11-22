@@ -403,8 +403,9 @@ fn pkg_hint(vendor: &str, family: &str) -> String {
     }
 }
 
-#[tauri::command]
-fn readiness() -> Vec<Check> {
+/// The readiness checks themselves: they read files and walk driver folders, so they run on a
+/// worker thread through the command below (and on the CLI's own thread).
+fn readiness_blocking() -> Vec<Check> {
     let family = distro_family();
     let vendors = gpu_vendors();
     let mut out = Vec::new();
@@ -537,6 +538,13 @@ fn readiness() -> Vec<Check> {
         }
     }
     out
+}
+
+/// The window shows the checks at startup, so the disk work above runs off the main thread. A
+/// worker that dies leaves nothing to show, and an empty list draws the same as no check at all.
+#[tauri::command]
+async fn readiness() -> Vec<Check> {
+    tauri::async_runtime::spawn_blocking(readiness_blocking).await.unwrap_or_default()
 }
 
 fn multilib_enabled() -> bool {
@@ -757,8 +765,14 @@ fn open_external(url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The end of the launcher log, as the window shows it. Reading and folding the file are disk work,
+/// so they run on a worker thread through the command below; a worker that dies shows an empty log.
 #[tauri::command]
-fn read_log() -> String {
+async fn read_log() -> String {
+    tauri::async_runtime::spawn_blocking(read_log_blocking).await.unwrap_or_default()
+}
+
+fn read_log_blocking() -> String {
     let text = fs::read_to_string(log_path()).unwrap_or_default();
     let lines = reports::condense_log(&text);
     let start = lines.len().saturating_sub(200);
@@ -768,7 +782,7 @@ fn read_log() -> String {
 /// Headless commands: `blizznux --cli wow-installs|wowup-status|wowup-install|wowup-seed|readiness`
 pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
     let out = match cmd {
-        "wow-installs" => serde_json::to_string_pretty(&addons::wow_installs()),
+        "wow-installs" => serde_json::to_string_pretty(&addons::wow_installs_blocking()),
         "wowup-status" => serde_json::to_string_pretty(&addons::wowup_status()),
         "wowup-install" => match tauri::async_runtime::block_on(addons::wowup_install()) {
             Ok(v) => Ok(format!("installed WowUp {v}")),
@@ -778,7 +792,7 @@ pub fn cli(cmd: &str, _rest: &[String]) -> i32 {
             Ok(n) => Ok(format!("registered {n} install(s) in {}", addons::wowup_config_dir().display())),
             Err(e) => { eprintln!("error: {e}"); return 1; }
         },
-        "readiness" => serde_json::to_string_pretty(&readiness()),
+        "readiness" => serde_json::to_string_pretty(&readiness_blocking()),
         "battlenet-update" => match tauri::async_runtime::block_on(updates::battlenet_update_check()) {
             Ok(v) => serde_json::to_string_pretty(&v),
             Err(e) => { eprintln!("error: {e}"); return 1; }

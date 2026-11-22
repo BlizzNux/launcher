@@ -94,8 +94,9 @@ fn wow_roots(prefix: &Path) -> Vec<PathBuf> {
     roots
 }
 
-#[tauri::command]
-pub fn wow_installs() -> Vec<WowInstall> {
+/// The install scan itself: it walks the prefix, so it runs on a worker thread through the
+/// command below and directly wherever the answer is already on a thread of our own.
+pub fn wow_installs_blocking() -> Vec<WowInstall> {
     let prefix = current_prefix();
     let mut out = Vec::new();
     for root in wow_roots(&prefix) {
@@ -130,10 +131,18 @@ pub fn wow_installs() -> Vec<WowInstall> {
     out
 }
 
+/// The window asks for the installs while it draws, so the walk runs off the main thread: a prefix
+/// on a slow disk or a network mount must not freeze it. A worker that dies leaves no answer to
+/// give, so the window sees the same empty list it sees with no install.
+#[tauri::command]
+pub async fn wow_installs() -> Vec<WowInstall> {
+    tauri::async_runtime::spawn_blocking(wow_installs_blocking).await.unwrap_or_default()
+}
+
 /// Only paths that are an AddOns folder of a detected install are accepted from the UI.
 fn checked_addons_dir(addons_dir: &str) -> Result<PathBuf, String> {
     let wanted = PathBuf::from(addons_dir);
-    if wow_installs().iter().any(|w| PathBuf::from(&w.addons_dir) == wanted) {
+    if wow_installs_blocking().iter().any(|w| PathBuf::from(&w.addons_dir) == wanted) {
         Ok(wanted)
     } else {
         Err("that folder is not a known World of Warcraft AddOns folder".into())
@@ -190,8 +199,9 @@ fn find_toc(folder: &Path) -> Option<PathBuf> {
     fs::read_dir(folder).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().map_or(false, |e| e == "toc"))
 }
 
-#[tauri::command]
-pub fn list_addons(addons_dir: String) -> Result<Vec<Addon>, String> {
+/// The addon listing itself: one directory walk and one TOC read per addon. It runs on a worker
+/// thread through the command below, never while the window waits inside the IPC handler.
+pub fn list_addons_blocking(addons_dir: String) -> Result<Vec<Addon>, String> {
     let dir = checked_addons_dir(&addons_dir)?;
     let mut out = Vec::new();
     if let Ok(rd) = fs::read_dir(&dir) {
@@ -216,6 +226,13 @@ pub fn list_addons(addons_dir: String) -> Result<Vec<Addon>, String> {
     }
     out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     Ok(out)
+}
+
+#[tauri::command]
+pub async fn list_addons(addons_dir: String) -> Result<Vec<Addon>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_addons_blocking(addons_dir))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -288,17 +305,28 @@ fn install_archive(addons_dir: &Path, bytes: &[u8]) -> Result<Vec<String>, Strin
 }
 
 /// Install from bytes sent by the UI (a ZIP the user picked). Headers carry the target folder.
+/// The unzip is the slow part (a large archive, a slow disk, a network mount), so it runs on a
+/// worker thread. The request only lends us the body, so the folder and the bytes are copied
+/// first: the invoke's own buffers are gone by the time the worker runs.
 #[tauri::command]
-pub fn install_addon_bytes(request: tauri::ipc::Request<'_>) -> Result<Vec<String>, String> {
+pub async fn install_addon_bytes(request: tauri::ipc::Request<'_>) -> Result<Vec<String>, String> {
     let addons_dir = request
         .headers()
         .get("x-addons-dir")
         .and_then(|v| v.to_str().ok())
         .ok_or("missing target folder")?
         .to_string();
-    let dir = checked_addons_dir(&addons_dir)?;
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else { return Err("expected file bytes".into()) };
-    install_archive(&dir, bytes)
+    let bytes = bytes.clone();
+    tauri::async_runtime::spawn_blocking(move || install_addon_bytes_blocking(addons_dir, bytes))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The unpacking half of `install_addon_bytes`, on owned data, for the worker thread.
+fn install_addon_bytes_blocking(addons_dir: String, bytes: Vec<u8>) -> Result<Vec<String>, String> {
+    let dir = checked_addons_dir(&addons_dir)?;
+    install_archive(&dir, &bytes)
 }
 
 fn pick_asset_for_flavor<'a>(assets: &'a [serde_json::Value], flavor: &str) -> Option<&'a str> {
@@ -377,6 +405,133 @@ mod tests {
             w.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    // The disk commands hand their work to a worker thread now, so their answers are checked
+    // against the workers themselves. A prefix is chosen through the environment alone, so these
+    // tests take a lock: nothing else in the crate reads the variables they set, and each guard
+    // puts them back.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A throwaway prefix holding one Retail install with an AddOns folder, the config that points
+    /// the launcher at it (so the folder is accepted like any install), and a cache for the log.
+    struct TempInstall {
+        root: PathBuf,
+        addons_dir: PathBuf,
+        env: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl TempInstall {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("blizznux-off-thread-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            let retail = root.join("prefix/drive_c/Program Files (x86)/World of Warcraft/_retail_");
+            let addons_dir = retail.join("Interface/AddOns");
+            fs::create_dir_all(&addons_dir).unwrap();
+            fs::write(retail.join("Wow.exe"), "").unwrap();
+            fs::create_dir_all(root.join("config/blizznux")).unwrap();
+            fs::write(root.join("config/blizznux/config"), format!("PREFIX={}\n", root.join("prefix").display())).unwrap();
+            let env = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+            std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+            std::env::set_var("XDG_DATA_HOME", root.join("data"));
+            std::env::set_var("XDG_CACHE_HOME", root.join("cache"));
+            TempInstall { root, addons_dir, env }
+        }
+
+        fn addon(&self, folder: &str, toc: &str) {
+            let dir = self.addons_dir.join(folder);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(format!("{folder}.toc")), toc).unwrap();
+        }
+
+        fn addons(&self) -> String {
+            self.addons_dir.display().to_string()
+        }
+
+        fn write_log(&self, text: &str) {
+            let dir = self.root.join("cache/blizznux");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("blizznux.log"), text).unwrap();
+        }
+    }
+
+    impl Drop for TempInstall {
+        fn drop(&mut self) {
+            for (k, v) in &self.env {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn the_off_thread_commands_answer_the_same_as_their_workers() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let install = TempInstall::new("same");
+        install.addon("MyAddon", "## Title: My |cff00ff00Addon|r\n## Version: 1.2.3\n");
+
+        // list_addons: the window's call and the worker hold the same answer.
+        let dir = install.addons();
+        let command = tauri::async_runtime::block_on(list_addons(dir.clone()));
+        let worker = list_addons_blocking(dir.clone());
+        assert_eq!(serde_json::to_value(&command).unwrap(), serde_json::to_value(&worker).unwrap());
+        let list = worker.expect("the fixture addon is listed");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].folder, "MyAddon");
+        assert_eq!(list[0].title, "My Addon");
+        assert_eq!(list[0].version, "1.2.3");
+
+        // A folder that is not an AddOns folder of this prefix gets the same refusal from both.
+        let elsewhere = install.root.join("elsewhere").display().to_string();
+        let command = tauri::async_runtime::block_on(list_addons(elsewhere.clone())).map(|_| ());
+        let worker = list_addons_blocking(elsewhere).map(|_| ());
+        assert_eq!(command, worker);
+        assert_eq!(command.unwrap_err(), "that folder is not a known World of Warcraft AddOns folder");
+
+        // read_log: same tail of the launcher log from both.
+        install.write_log("alpha\n\nbeta\ngamma\n");
+        let command = tauri::async_runtime::block_on(crate::read_log());
+        assert_eq!(command, crate::read_log_blocking());
+        assert_eq!(command, "alpha\nbeta\ngamma");
+
+        // install_addon_bytes: the worker unpacks the bytes it was handed and names the folders.
+        let z = zip_with(&[("Packed/Packed.toc", "## Title: Packed\n"), ("Packed/core.lua", "-- lua")]);
+        assert_eq!(install_addon_bytes_blocking(dir.clone(), z), Ok(vec!["Packed".to_string()]));
+        assert!(install.addons_dir.join("Packed/core.lua").is_file());
+        assert_eq!(install_addon_bytes_blocking(dir, b"not a zip".to_vec()), Err("that file is not a ZIP archive".to_string()));
+    }
+
+    // The check is the bound: a plain fn's answer is not a future, so this stops compiling the
+    // moment one of the commands goes back to doing its disk work inside the invoke handler.
+    fn answers_with_a_future<F: std::future::Future>(_: F) {}
+
+    // The IPC request has no constructor outside Tauri, so install_addon_bytes' future is only
+    // named here, never run.
+    fn answers_the_request_with_a_future<F, Fut>(_: F)
+    where
+        F: FnOnce(tauri::ipc::Request<'static>) -> Fut,
+        Fut: std::future::Future,
+    {}
+
+    #[test]
+    fn every_disk_command_hands_its_work_to_a_worker() {
+        answers_with_a_future(wow_installs());
+        answers_with_a_future(list_addons(String::new()));
+        answers_with_a_future(crate::readiness());
+        answers_with_a_future(crate::read_log());
+        answers_the_request_with_a_future(install_addon_bytes);
+        // The workers stay plain fns: they are what the worker thread runs, and what the CLI calls.
+        let _: fn() -> Vec<WowInstall> = wow_installs_blocking;
+        let _: fn(String) -> Result<Vec<Addon>, String> = list_addons_blocking;
+        let _: fn(String, Vec<u8>) -> Result<Vec<String>, String> = install_addon_bytes_blocking;
+        let _: fn() -> Vec<crate::Check> = crate::readiness_blocking;
+        let _: fn() -> String = crate::read_log_blocking;
     }
 
     #[test]
@@ -635,7 +790,7 @@ fn merge_wowup_install(list: &mut Vec<serde_json::Value>, flavor: &str, exe: &st
 
 /// Register our WoW installs in WowUp's preferences (merging with whatever is there).
 pub(crate) fn seed_wowup_installs() -> Result<usize, String> {
-    let installs = wow_installs();
+    let installs = wow_installs_blocking();
     if installs.is_empty() {
         return Ok(0);
     }
