@@ -58,6 +58,7 @@ accepts "--offload auto" "launch||auto|" --offload auto
 accepts "install" "install||auto|" install
 accepts "doctor after --offload" "doctor||off|" --offload off doctor
 accepts "dpi keeps its number" "dpi||auto|144" dpi 144
+accepts "dpi without a number" "dpi||auto|" dpi
 accepts "dpi after --offload" "dpi||off|144" --offload off dpi 144
 
 # A mistyped option is not silently a launch, and --offload takes only its three values.
@@ -65,6 +66,15 @@ refuses "unknown long option" 2 "unknown option '--gmae'" --gmae WoW
 refuses "unknown short option" 2 "unknown option '-x'" -x
 refuses "bad --offload value" 2 "not 'of'" --offload of
 refuses "--offload value is not upper case" 2 "not 'ON'" --offload ON
+refuses "--offload without a value" 2 "--offload needs on|off|auto" --offload
+refuses "--game without a code" 2 "--game needs a code" --game
+refuses "--game with an empty code" 2 "--game needs a code" --game ""
+
+# Neither a mistyped command nor extra words reach the command: they are refused, not ignored.
+refuses "mistyped command" 2 "unexpected argument 'instal'" instal
+refuses "launch takes no words" 2 "unexpected argument 'extra'" launch extra
+refuses "install takes no words" 2 "unexpected argument 'extra'" install extra
+refuses "dpi takes at most one number" 2 "unexpected argument '200'" dpi 144 200
 
 # fetch_umu: every way out of the download removes its temp folder (TMPDIR here), and the success
 # path still installs umu-run. curl, sha256sum and install are stubbed; nothing goes to the network.

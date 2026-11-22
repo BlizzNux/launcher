@@ -460,16 +460,22 @@ cmd_doctor() {
 }
 
 # Reads the command and its options. The first word that is not an option stops the options, so
-# "dpi 144" keeps its number for the command. A mistyped option is reported, never ignored.
+# "dpi 144" keeps its number for the command. Only the command's own arguments follow it: one for
+# dpi, none for the rest. A mistyped option or an extra word is reported, never ignored.
 parse_args() {
 	cmd=launch
 	while (( $# )); do
 		case $1 in
 		launch|install|dpi|umu|proton|doctor) cmd=$1 ;;
 		import|--prefix|--proton) die "'$1' is gone: the launcher installs Battle.net itself and runs it on its own Proton" ;;
-		--game) GAME=${2:?--game needs a code}; shift ;;
+		--game)
+			[[ -n ${2:-} ]] || usage_error "--game needs a code"
+			GAME=$2
+			shift
+			;;
 		--offload)
-			OFFLOAD=${2:?--offload needs on|off|auto}
+			(( $# >= 2 )) || usage_error "--offload needs on|off|auto"
+			OFFLOAD=$2
 			case $OFFLOAD in
 			on|off|auto) ;;
 			*) usage_error "--offload takes on, off or auto, not '$OFFLOAD'" ;;
@@ -484,6 +490,11 @@ parse_args() {
 		shift
 	done
 	ARGS=("$@")
+	if [[ $cmd == dpi ]]; then
+		(( $# <= 1 )) || usage_error "unexpected argument '${ARGS[1]}'"
+	else
+		(( $# == 0 )) || usage_error "unexpected argument '${ARGS[0]}'"
+	fi
 }
 
 load_config
