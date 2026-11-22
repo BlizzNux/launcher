@@ -539,60 +539,49 @@ fn readiness() -> Vec<Check> {
     out
 }
 
-/// NVIDIA driver major version from the kernel module, digits only (e.g. "595").
-fn nvidia_major() -> Option<String> {
-    let text = fs::read_to_string("/proc/driver/nvidia/version").ok()?;
-    let token = text.split_whitespace().find(|t| t.chars().next().map_or(false, |c| c.is_ascii_digit()) && t.contains('.'))?;
-    let major: String = token.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if major.is_empty() { None } else { Some(major) }
-}
-
 fn multilib_enabled() -> bool {
     fs::read_to_string("/etc/pacman.conf")
         .map(|t| t.lines().any(|l| l.trim() == "[multilib]"))
         .unwrap_or(false)
 }
 
-/// The exact root commands that would fix a failed readiness check, or None if we don't know how.
+/// The fix steps that would repair a failed readiness check, as the ids bin/blizznux-run knows, or
+/// None if we don't know how. The ids are all the app ever hands over: the wrapper maps each one to
+/// its own fixed command, so no word from here can become part of a command.
 fn fix_steps(check: &str) -> Option<Vec<String>> {
     if std::env::var_os("FLATPAK_ID").is_some() {
         return None; // no pkexec inside the sandbox; the hint text explains what to install
     }
-    let family = distro_family();
-    let vendors = gpu_vendors();
+    plan_steps(check, distro_family(), &gpu_vendors(), multilib_enabled())
+}
+
+/// The plan itself, with the machine facts passed in so that a test can pin a distro and a GPU.
+/// Same fixes, same order and same conditions as before; only the names are ids now.
+fn plan_steps(check: &str, family: &str, vendors: &[&str], multilib: bool) -> Option<Vec<String>> {
     let mut steps: Vec<String> = Vec::new();
     match (check, family) {
         // umu-launcher itself is downloaded by the wrapper; only python3 can be missing for it.
-        ("umu-launcher", "arch") => steps.push("pacman -S --needed --noconfirm python".into()),
-        ("umu-launcher", "fedora") => steps.push("dnf -y install python3".into()),
-        ("umu-launcher", "debian") => {
-            steps.push("apt-get update".into());
-            steps.push("apt-get install -y python3".into());
-        }
+        ("umu-launcher", "arch") => steps.push("pacman-python".into()),
+        ("umu-launcher", "fedora") => steps.push("dnf-python3".into()),
+        ("umu-launcher", "debian") => steps.extend(["apt-update", "apt-python3"].map(String::from)),
         // The launcher's own Proton is downloaded by the wrapper; only xz can be missing for it.
-        ("Proton", "arch") => steps.push("pacman -S --needed --noconfirm xz".into()),
-        ("Proton", "fedora") => steps.push("dnf -y install xz".into()),
-        ("Proton", "debian") => {
-            steps.push("apt-get update".into());
-            steps.push("apt-get install -y xz-utils".into());
-        }
-        ("curl", "arch") => steps.push("pacman -S --needed --noconfirm curl".into()),
-        ("curl", "fedora") => steps.push("dnf -y install curl".into()),
-        ("curl", "debian") => {
-            steps.push("apt-get update".into());
-            steps.push("apt-get install -y curl".into());
-        }
+        ("Proton", "arch") => steps.push("pacman-xz".into()),
+        ("Proton", "fedora") => steps.push("dnf-xz".into()),
+        ("Proton", "debian") => steps.extend(["apt-update", "apt-xz-utils"].map(String::from)),
+        ("curl", "arch") => steps.push("pacman-curl".into()),
+        ("curl", "fedora") => steps.push("dnf-curl".into()),
+        ("curl", "debian") => steps.extend(["apt-update", "apt-curl"].map(String::from)),
         ("Vulkan driver (32-bit)", fam) => {
-            let mut pkgs: Vec<String> = Vec::new();
-            for v in &vendors {
+            let mut pkgs: Vec<&str> = Vec::new();
+            for v in vendors {
                 let pkg = match (*v, fam) {
-                    ("nvidia", "arch") => "lib32-nvidia-utils".to_string(),
-                    ("amd", "arch") => "lib32-vulkan-radeon".to_string(),
-                    ("intel", "arch") => "lib32-vulkan-intel".to_string(),
-                    ("nvidia", "fedora") => "nvidia-driver-libs.i686".to_string(),
-                    (_, "fedora") => "mesa-vulkan-drivers.i686".to_string(),
-                    ("nvidia", "debian") => format!("libnvidia-gl-{}:i386", nvidia_major()?),
-                    (_, "debian") => "mesa-vulkan-drivers:i386".to_string(),
+                    ("nvidia", "arch") => "pacman-lib32-nvidia-utils",
+                    ("amd", "arch") => "pacman-lib32-vulkan-radeon",
+                    ("intel", "arch") => "pacman-lib32-vulkan-intel",
+                    ("nvidia", "fedora") => "dnf-nvidia-driver-libs-i686",
+                    (_, "fedora") => "dnf-mesa-vulkan-drivers-i686",
+                    ("nvidia", "debian") => "apt-vulkan-nvidia",
+                    (_, "debian") => "apt-vulkan-mesa",
                     _ => return None,
                 };
                 if !pkgs.contains(&pkg) {
@@ -604,17 +593,15 @@ fn fix_steps(check: &str) -> Option<Vec<String>> {
             }
             match fam {
                 "arch" => {
-                    if !multilib_enabled() {
-                        steps.push("sed -i '/^#\\[multilib\\]/,/^#Include/ s/^#//' /etc/pacman.conf".into());
-                        steps.push("pacman -Sy".into());
+                    if !multilib {
+                        steps.extend(["sed-multilib", "pacman-sy"].map(String::from));
                     }
-                    steps.push(format!("pacman -S --needed --noconfirm {}", pkgs.join(" ")));
+                    steps.extend(pkgs.iter().map(|p| p.to_string()));
                 }
-                "fedora" => steps.push(format!("dnf -y install {}", pkgs.join(" "))),
+                "fedora" => steps.extend(pkgs.iter().map(|p| p.to_string())),
                 "debian" => {
-                    steps.push("dpkg --add-architecture i386".into());
-                    steps.push("apt-get update".into());
-                    steps.push(format!("apt-get install -y {}", pkgs.join(" ")));
+                    steps.extend(["dpkg-i386", "apt-update"].map(String::from));
+                    steps.extend(pkgs.iter().map(|p| p.to_string()));
                 }
                 _ => return None,
             }
@@ -624,24 +611,49 @@ fn fix_steps(check: &str) -> Option<Vec<String>> {
     Some(steps)
 }
 
+/// The commands a plan would run, as bin/blizznux-run prints them: the one place that turns an id
+/// into a command, so what the user reads is exactly what fix_apply would run.
+fn plan_lines(app: &AppHandle, check: &str) -> Option<Vec<String>> {
+    let ids = fix_steps(check)?;
+    let script = script_path(app)?; // without the wrapper nothing can run: no automatic fix
+    let out = host_command(&script)
+        .arg("fix")
+        .arg("--print")
+        .args(&ids)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect())
+}
+
 #[tauri::command]
-fn fix_plan(check: String) -> Option<Vec<String>> {
-    fix_steps(&check)
+async fn fix_plan(app: AppHandle, check: String) -> Option<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || plan_lines(&app, &check))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Runs the fix plan as root through the system's polkit prompt (pkexec). Returns the output.
+///
+/// The whole plan is one pkexec call of the launcher's own blizznux-run with the step ids, so
+/// whatever the plan's length the user answers one password prompt. There is no shell and the ids
+/// are the only words that side accepts: the wrapper's own table decides what runs.
 #[tauri::command]
-async fn fix_apply(check: String) -> Result<String, String> {
-    let steps = fix_steps(&check).ok_or("no automatic fix is known for this system")?;
+async fn fix_apply(app: AppHandle, check: String) -> Result<String, String> {
+    let ids = fix_steps(&check).ok_or("no automatic fix is known for this system")?;
     if !on_path("pkexec") {
         return Err("pkexec (polkit) is not available; run the commands shown in a terminal with sudo".into());
     }
-    let script = steps.iter().map(|s| format!("echo \"+ {s}\"; {s}")).collect::<Vec<_>>().join(" && ");
+    let script = script_path(&app).ok_or("blizznux-run not found (run install.sh)")?;
     tauri::async_runtime::spawn_blocking(move || {
         let out = host_command("pkexec")
-            .arg("sh")
-            .arg("-c")
             .arg(&script)
+            .arg("fix")
+            .args(&ids)
             .stdin(Stdio::null())
             .output()
             .map_err(|e| e.to_string())?;
@@ -991,5 +1003,116 @@ mod lab_tests {
         assert_eq!(vk32_detail(false, true, &["amd"]), "not needed while Labs: Wine WoW64 mode is on");
         assert_eq!(vk32_detail(true, true, &["amd"]), "found");
         assert!(vk32_detail(false, false, &["amd"]).starts_with("missing for amd"));
+    }
+
+    // Every plan, for every system the checks know: the step ids bin/blizznux-run maps to commands.
+    const CHECKS: [&str; 4] = ["umu-launcher", "Proton", "curl", "Vulkan driver (32-bit)"];
+    const FAMILIES: [&str; 3] = ["arch", "fedora", "debian"];
+    // One GPU of each vendor, then the pairs a laptop can have.
+    const VENDOR_SETS: [&[&str]; 6] = [
+        &["nvidia"],
+        &["amd"],
+        &["intel"],
+        &["nvidia", "amd"],
+        &["nvidia", "intel"],
+        &["amd", "intel"],
+    ];
+
+    // Every id the app can name, from every plan for every system it knows, sorted.
+    fn all_plan_ids() -> Vec<String> {
+        let mut ids: Vec<String> = Vec::new();
+        for check in CHECKS {
+            for fam in FAMILIES {
+                for multilib in [false, true] {
+                    for vendors in VENDOR_SETS {
+                        let Some(plan) = plan_steps(check, fam, vendors, multilib) else { continue };
+                        for id in plan {
+                            if !ids.contains(&id) {
+                                ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn a_fix_plan_names_the_same_steps_in_the_same_order() {
+        let plan = |check: &str, fam: &str, vendors: &[&str], multilib: bool| -> Vec<String> {
+            plan_steps(check, fam, vendors, multilib).unwrap()
+        };
+        assert_eq!(plan("umu-launcher", "arch", &["amd"], true), ["pacman-python"]);
+        assert_eq!(plan("umu-launcher", "fedora", &["amd"], true), ["dnf-python3"]);
+        assert_eq!(plan("umu-launcher", "debian", &["amd"], true), ["apt-update", "apt-python3"]);
+        assert_eq!(plan("Proton", "arch", &["amd"], true), ["pacman-xz"]);
+        assert_eq!(plan("Proton", "fedora", &["amd"], true), ["dnf-xz"]);
+        assert_eq!(plan("Proton", "debian", &["amd"], true), ["apt-update", "apt-xz-utils"]);
+        assert_eq!(plan("curl", "arch", &["amd"], true), ["pacman-curl"]);
+        assert_eq!(plan("curl", "fedora", &["amd"], true), ["dnf-curl"]);
+        assert_eq!(plan("curl", "debian", &["amd"], true), ["apt-update", "apt-curl"]);
+        // Arch Vulkan without multilib: the sed, then the sync, then the drivers.
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "arch", &["amd"], false),
+            ["sed-multilib", "pacman-sy", "pacman-lib32-vulkan-radeon"]
+        );
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "arch", &["amd"], true),
+            ["pacman-lib32-vulkan-radeon"]
+        );
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "arch", &["nvidia"], true),
+            ["pacman-lib32-nvidia-utils"]
+        );
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "fedora", &["nvidia"], true),
+            ["dnf-nvidia-driver-libs-i686"]
+        );
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "debian", &["nvidia"], false),
+            ["dpkg-i386", "apt-update", "apt-vulkan-nvidia"]
+        );
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "debian", &["amd"], true),
+            ["dpkg-i386", "apt-update", "apt-vulkan-mesa"]
+        );
+        // Two GPUs of one package manager's kind: one step for each driver, none twice.
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "arch", &["amd", "intel"], true),
+            ["pacman-lib32-vulkan-radeon", "pacman-lib32-vulkan-intel"]
+        );
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "fedora", &["amd", "intel"], true),
+            ["dnf-mesa-vulkan-drivers-i686"]
+        );
+        assert_eq!(
+            plan("Vulkan driver (32-bit)", "debian", &["amd", "nvidia"], true),
+            ["dpkg-i386", "apt-update", "apt-vulkan-mesa", "apt-vulkan-nvidia"]
+        );
+        assert!(plan_steps("something else", "arch", &["amd"], true).is_none());
+        assert!(plan_steps("curl", "gentoo", &["amd"], true).is_none());
+        assert!(plan_steps("Vulkan driver (32-bit)", "gentoo", &["amd"], true).is_none());
+    }
+
+    // The ids and the wrapper's table are one list in two files: this is what keeps them from
+    // drifting apart. Every id the app can name is a case in bin/blizznux-run's fix_argv, and that
+    // table holds nothing else.
+    #[test]
+    fn every_fix_id_the_app_can_name_is_a_step_the_wrapper_knows() {
+        let src = include_str!("../../bin/blizznux-run");
+        let body = src.split_once("fix_argv() {").expect("bin/blizznux-run has no fix_argv").1;
+        let mut table: Vec<String> = Vec::new();
+        for line in body.lines().take_while(|l| l.trim() != "}") {
+            let Some((head, _)) = line.trim().split_once(')') else { continue };
+            if head.contains('-') && head.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                table.push(head.to_string());
+            }
+        }
+        table.sort();
+        assert!(!table.is_empty(), "the wrapper's fix table is empty");
+        assert_eq!(table.len(), 20, "the wrapper's fix table: {table:?}");
+        assert_eq!(table, all_plan_ids());
     }
 }
