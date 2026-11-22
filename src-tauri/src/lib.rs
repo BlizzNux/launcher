@@ -882,6 +882,7 @@ pub fn run() {
             reports::submit_report,
             reports::flush_reports,
             reports::waiting_reports,
+            reports::other_account_reports,
             reports::account_status,
             reports::session_state,
             reports::close_battlenet,

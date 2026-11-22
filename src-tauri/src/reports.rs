@@ -878,6 +878,37 @@ fn user_token() -> String {
     load_config().get("USER_TOKEN").cloned().unwrap_or_default()
 }
 
+/// The account the link belongs to, by name. The outbox records only this, never the token, and
+/// nothing is recorded while no token is stored (logged out, or a link ended by the site).
+fn linked_account() -> Option<String> {
+    account_in(&load_config())
+}
+
+/// The account linked now, and the one whose link was forgotten before it.
+fn linked_accounts() -> (Option<String>, Option<String>) {
+    let c = load_config();
+    (account_in(&c), last_account_in(&c))
+}
+
+/// `LAST_USERNAME` is written only when a link is forgotten, so an empty one means no other
+/// account was linked here before.
+fn last_account_in(config: &BTreeMap<String, String>) -> Option<String> {
+    config.get("LAST_USERNAME").map(|n| n.trim()).filter(|n| !n.is_empty()).map(String::from)
+}
+
+/// A link this launcher made always stores the name with the token. A token without one (an
+/// edited config, or a link from before names were kept) reads as no account: saved reports then
+/// wait rather than go out under a name nobody can check.
+fn account_in(config: &BTreeMap<String, String>) -> Option<String> {
+    let linked = config.get("USER_TOKEN").map_or(false, |t| !t.is_empty());
+    let name = config.get("USERNAME").map(|n| n.trim()).unwrap_or_default();
+    if linked && !name.is_empty() {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
 /// Reports about something that went wrong. They carry the end of the launcher log.
 fn is_problem(kind: &str, outcome: Option<&str>) -> bool {
     match kind {
@@ -1389,6 +1420,10 @@ struct Pending {
     /// Kept until the launcher is logged in: the site takes reports only from a logged-in launcher.
     #[serde(default)]
     needs_login: bool,
+    /// The account the report was written for, by name (never the token): it goes out only while
+    /// that same account is linked again.
+    #[serde(default)]
+    account: Option<String>,
     /// The Labs settings that were on for the session, kept so a report sent later says so.
     #[serde(default)]
     lab: Vec<String>,
@@ -1432,6 +1467,7 @@ pub struct Submitted {
 /// again on later starts.
 #[tauri::command]
 pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<Submitted, String> {
+    let linked = !user_token().is_empty();
     let mut pending = Pending {
         kind: kind.clone(),
         game: game.clone(),
@@ -1442,9 +1478,11 @@ pub async fn submit_report(kind: String, game: Option<String>, outcome: Option<S
         report: None,
         refused_by: None,
         needs_login: false,
+        // Whose report this is: it goes out only under the same account, never under whoever
+        // happens to be logged in when it is tried again.
+        account: linked_account(),
         lab: Vec::new(),
     };
-    let linked = !user_token().is_empty();
     let reason = match build(kind, game, outcome, comment) {
         Ok(body) => {
             // Without a login the site can only answer "log in first": skip that round trip.
@@ -1500,18 +1538,40 @@ fn without_token(mut body: serde_json::Value) -> serde_json::Value {
 enum Held {
     Expired,
     Wait,
+    /// Written for another account than the one linked now: kept, and never sent as this one.
+    OtherAccount,
     Send,
 }
 
+/// Two names are the same account whatever the case: the link keeps the name the site shows, and
+/// a site may spell it back differently.
+fn same_account(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// True when the report may go out as the account linked now: the one it was written for, or, for
+/// a file that names none, one this install has not replaced with someone else since.
+fn written_for(pending: &Pending, linked: &str, last: Option<&str>) -> bool {
+    match pending.account.as_deref() {
+        Some(account) => same_account(account, linked),
+        // Saved before the account was written down. It may only be sent while this install has
+        // not forgotten another account's link: with one, the report could be someone else's.
+        None => last.map_or(true, |last| same_account(last, linked)),
+    }
+}
+
 /// Every report needs a login, so nothing goes out while the launcher is logged out; a report
-/// the site refused waits for the next launcher version.
-fn held(pending: &Pending, linked: bool, now: u64) -> Held {
+/// the site refused waits for the next launcher version. A report also belongs to the account it
+/// was written for: with another account linked it stays put until that one is back.
+fn held(pending: &Pending, linked: Option<&str>, last: Option<&str>, now: u64) -> Held {
     if now.saturating_sub(pending.saved_at) > PENDING_SECS {
         Held::Expired
-    } else if !linked || pending.refused_by.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+    } else if linked.is_none() || pending.refused_by.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
         Held::Wait
-    } else {
+    } else if linked.map_or(false, |linked| written_for(pending, linked, last)) {
         Held::Send
+    } else {
+        Held::OtherAccount
     }
 }
 
@@ -1523,28 +1583,42 @@ fn outbox() -> Vec<PathBuf> {
     files
 }
 
-/// How many saved reports wait for the user to log in.
-#[tauri::command]
-pub fn waiting_reports() -> usize {
+/// Every saved report as it stands on disk now; a file that no longer reads as one is left to
+/// the flush, which knows what to do with it.
+fn saved_reports() -> Vec<Pending> {
     outbox()
         .iter()
         .filter_map(|p| fs::read(p).ok().and_then(|b| serde_json::from_slice::<Pending>(&b).ok()))
-        .filter(|p| p.needs_login && held(p, false, now_secs()) != Held::Expired)
-        .count()
+        .collect()
+}
+
+/// How many saved reports wait for the user to log in.
+#[tauri::command]
+pub fn waiting_reports() -> usize {
+    // Logged out on purpose: every report kept for a login counts here, whatever its account.
+    saved_reports().iter().filter(|p| p.needs_login && held(p, None, None, now_secs()) != Held::Expired).count()
+}
+
+/// How many saved reports belong to another account than the one linked now: they wait for that
+/// account to come back, or expire, and are never sent under the current one.
+#[tauri::command]
+pub fn other_account_reports() -> usize {
+    let (linked, last) = linked_accounts();
+    saved_reports().iter().filter(|p| held(p, linked.as_deref(), last.as_deref(), now_secs()) == Held::OtherAccount).count()
 }
 
 /// Try the outbox again (the UI asks once per start and once after a login); returns how many
 /// reports got through.
 #[tauri::command]
 pub async fn flush_reports() -> usize {
-    let linked = !user_token().is_empty();
+    let (linked, last) = linked_accounts();
     let mut sent = 0;
     for path in outbox() {
         let discard = || { let _ = fs::remove_file(&path); };
         let Some(mut pending) = fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Pending>(&b).ok()) else { discard(); continue };
-        match held(&pending, linked, now_secs()) {
+        match held(&pending, linked.as_deref(), last.as_deref(), now_secs()) {
             Held::Expired => { discard(); continue }
-            Held::Wait => continue,
+            Held::Wait | Held::OtherAccount => continue,
             Held::Send => {}
         }
         let body = match pending.report.clone() {
@@ -2674,7 +2748,7 @@ mod tests {
         assert!(matches!(answer(503, ""), Err(SendError::Unreachable(_))));
     }
 
-    fn saved(saved_at: u64, refused_by: Option<&str>, needs_login: bool) -> Pending {
+    fn saved(saved_at: u64, refused_by: Option<&str>, needs_login: bool, account: Option<&str>) -> Pending {
         Pending {
             kind: "run".into(),
             game: Some("WoW".into()),
@@ -2685,6 +2759,7 @@ mod tests {
             report: None,
             refused_by: refused_by.map(String::from),
             needs_login,
+            account: account.map(String::from),
             lab: Vec::new(),
         }
     }
@@ -2693,16 +2768,96 @@ mod tests {
     fn a_saved_report_waits_for_a_login_and_is_never_retried_in_a_loop() {
         let now = 10 * PENDING_SECS;
         // Logged out: everything waits, nothing is sent and nothing is marked refused.
-        assert_eq!(held(&saved(now, None, true), false, now), Held::Wait);
-        assert_eq!(held(&saved(now, None, false), false, now), Held::Wait);
-        // Once logged in it goes out.
-        assert_eq!(held(&saved(now, None, true), true, now), Held::Send);
+        assert_eq!(held(&saved(now, None, true, Some("alice")), None, None, now), Held::Wait);
+        assert_eq!(held(&saved(now, None, false, Some("alice")), None, None, now), Held::Wait);
+        // Once logged in as that account it goes out.
+        assert_eq!(held(&saved(now, None, true, Some("alice")), Some("alice"), None, now), Held::Send);
         // A report the site refused waits for the next launcher version.
-        assert_eq!(held(&saved(now, Some(env!("CARGO_PKG_VERSION")), false), true, now), Held::Wait);
-        assert_eq!(held(&saved(now, Some("0.0.1"), false), true, now), Held::Send);
+        assert_eq!(held(&saved(now, Some(env!("CARGO_PKG_VERSION")), false, Some("alice")), Some("alice"), None, now), Held::Wait);
+        assert_eq!(held(&saved(now, Some("0.0.1"), false, Some("alice")), Some("alice"), None, now), Held::Send);
         // A week later it is gone, logged in or not.
-        assert_eq!(held(&saved(now - PENDING_SECS - 1, None, true), false, now), Held::Expired);
-        assert_eq!(held(&saved(now - PENDING_SECS - 1, None, true), true, now), Held::Expired);
+        assert_eq!(held(&saved(now - PENDING_SECS - 1, None, true, Some("alice")), None, None, now), Held::Expired);
+        assert_eq!(held(&saved(now - PENDING_SECS - 1, None, true, Some("alice")), Some("alice"), None, now), Held::Expired);
+    }
+
+    #[test]
+    fn a_saved_report_goes_out_only_for_the_account_it_was_written_for() {
+        let now = 10 * PENDING_SECS;
+        let report = saved(now, None, false, Some("alice"));
+        // The same account linked again, whatever the case of the name: it is sent.
+        assert_eq!(held(&report, Some("alice"), None, now), Held::Send);
+        assert_eq!(held(&report, Some("Alice"), None, now), Held::Send);
+        // Another account: kept as it is, so it is never sent as, or attributed to, that one.
+        assert_eq!(held(&report, Some("bob"), None, now), Held::OtherAccount);
+        // Names are compared whole: no partial match.
+        for other in ["alice2", "alic", "bob"] {
+            assert_eq!(held(&report, Some(other), None, now), Held::OtherAccount);
+        }
+        // It still expires a week after it was written, whichever account is linked by then.
+        let old = saved(now - PENDING_SECS - 1, None, false, Some("alice"));
+        assert_eq!(held(&old, Some("bob"), None, now), Held::Expired);
+    }
+
+    #[test]
+    fn a_report_saved_before_accounts_were_written_down_goes_out_unless_another_link_was_forgotten() {
+        let old = r#"{"kind":"run","game":"WoW","outcome":"perfect","comment":null,"saved_at":10,"build":"","report":null,"refused_by":null}"#;
+        let p: Pending = serde_json::from_str(old).unwrap();
+        assert_eq!(p.account, None);
+        // No link was ever forgotten here: it goes out under the account linked, as it always did.
+        assert_eq!(held(&p, Some("alice"), None, 10), Held::Send);
+        assert_eq!(held(&p, Some("bob"), None, 10), Held::Send);
+        // A link was forgotten and the same person is back: still theirs to send, whatever the case.
+        assert_eq!(held(&p, Some("alice"), Some("alice"), 10), Held::Send);
+        assert_eq!(held(&p, Some("Alice"), Some("ALICE"), 10), Held::Send);
+        // Another account linked since: the report may be the forgotten one's, so it stays.
+        assert_eq!(held(&p, Some("bob"), Some("alice"), 10), Held::OtherAccount);
+        // Logged out it waits, whichever account came before.
+        assert_eq!(held(&p, None, Some("alice"), 10), Held::Wait);
+    }
+
+    #[test]
+    fn only_a_stored_link_with_a_name_is_an_account() {
+        let mut c = BTreeMap::new();
+        assert_eq!(account_in(&c), None);
+        c.insert("USERNAME".into(), "alice".into());   // a name without a link is not a login
+        assert_eq!(account_in(&c), None);
+        c.insert("USER_TOKEN".into(), "token".into());
+        assert_eq!(account_in(&c), Some("alice".into()));
+        c.insert("USERNAME".into(), " alice ".into());   // the name the site gave, without space
+        assert_eq!(account_in(&c), Some("alice".into()));
+        c.insert("USER_TOKEN".into(), String::new());    // logged out: nothing to attribute
+        assert_eq!(account_in(&c), None);
+        c.insert("USER_TOKEN".into(), "token".into());
+        c.remove("USERNAME");                            // a token alone names nobody
+        assert_eq!(account_in(&c), None);
+    }
+
+    #[test]
+    fn a_forgotten_link_names_the_account_it_was_forgotten_for() {
+        let mut c = BTreeMap::new();
+        assert_eq!(last_account_in(&c), None);            // nothing was forgotten on this install
+        c.insert("LAST_USERNAME".into(), "  ".into());
+        assert_eq!(last_account_in(&c), None);            // a blank name is no name
+        c.insert("LAST_USERNAME".into(), " alice ".into());
+        assert_eq!(last_account_in(&c), Some("alice".into()));
+    }
+
+    #[test]
+    fn a_saved_report_file_names_the_account_and_carries_no_token() {
+        let dir = std::env::temp_dir().join(format!("blizznux-outbox-test-{}", std::process::id()));
+        let path = dir.join("1.json");
+        let mut p = saved(10, None, false, Some("alice"));
+        p.report = Some(serde_json::json!({ "schema": 1, "type": "run" }));
+        save_pending(&path, &p).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(text.contains("\"account\": \"alice\""), "{text}");
+        assert!(!text.contains("user_token"), "{text}");
+        // It reads back as the same report, and stays put under another account.
+        let back: Pending = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.account.as_deref(), Some("alice"));
+        assert_eq!(held(&back, Some("bob"), None, 10), Held::OtherAccount);
+        assert_eq!(held(&back, Some("ALICE"), None, 10), Held::Send);
     }
 
     #[test]

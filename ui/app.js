@@ -126,7 +126,7 @@ async function pollLogin() {
       // The view stays where it is: the login happened on the site's own page, which has just
       // reloaded as logged in. Loading it once more would cut that page's requests short.
       if (r.returning) status(`Logged in as ${r.username}.`); else askSharing(r.username);
-      sendHeld();
+      sendHeld().then(showHeldElsewhere);
     } else if (r.status === "expired" || r.status === "none") {
       pairing = false;   // no new pairing by itself: a login or the Log in button starts the next one
     } else if (r.status === "busy") {
@@ -221,6 +221,14 @@ async function sendHeld() {
   try {
     const n = await invoke("flush_reports");
     if (n) status(n === 1 ? "Sent the report saved earlier." : `Sent the ${n} reports saved earlier.`);
+  } catch (e) { console.error(e); }
+}
+
+// A saved report belongs to the account it was written for: with another one linked it stays put.
+async function showHeldElsewhere() {
+  try {
+    const n = await invoke("other_account_reports");
+    if (n) status(n === 1 ? "1 saved report belongs to another account and waits until that account is linked again." : `${n} saved reports belong to another account and wait until that account is linked again.`);
   } catch (e) { console.error(e); }
 }
 
@@ -683,8 +691,8 @@ async function init() {
   if (st.installed && !acct.linked) startLogin(); else { showSite(FORUM); checkLink("start"); }
   checkUpdate(version);
   checkBattlenet();
-  if (acct.linked) sendHeld();
-  else invoke("waiting_reports").then((n) => { if (n) status(n === 1 ? "1 report is waiting for you to log in." : `${n} reports are waiting for you to log in.`); }).catch(() => {});
+  if (acct.linked) sendHeld().then(showHeldElsewhere);
+  else invoke("waiting_reports").then((n) => { if (n) status(n === 1 ? "1 report is waiting for you to log in." : `${n} reports are waiting for you to log in.`); }).catch(() => {}).then(showHeldElsewhere);
   setInterval(refreshAddonsButton, 60000);   // picks up a WoW install made after launch
   setInterval(() => checkLink("timer"), LINK_CHECK_EVERY_MS);   // a link ended from another browser is noticed without a restart
   watchStaleness();
