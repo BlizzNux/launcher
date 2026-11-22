@@ -47,6 +47,11 @@ jobs:
       - name: Labs environment (DXVK_CONFIG, Xalia, BLIZZNUX_LAB)
         run: scripts/test-labs-env.sh
 
+      # Argument parsing, and every way the umu-launcher download can fail: a mistyped option is
+      # never ignored, and a failed first run leaves no temp files behind (issue #80).
+      - name: Wrapper arguments and umu download cleanup
+        run: bash scripts/test-blizznux-run.sh
+
       - name: Unit tests
         working-directory: src-tauri
         run: cargo test --lib
