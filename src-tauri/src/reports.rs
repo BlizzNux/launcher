@@ -1065,13 +1065,12 @@ pub(crate) fn newest_crash(errors: &Path, now: SystemTime, max_age: u64) -> Opti
         .map(|(_, p)| p)
 }
 
-/// WoW's own crash report for the game in a report body, when one is fresh.
-fn crash_file(body: &serde_json::Value) -> Option<String> {
-    let code = body["game"]["code"].as_str()?;
+/// WoW's own crash report for the version a report is about, when one is fresh.
+fn crash_file(code: &str, flavor: &str) -> Option<String> {
     if code != "WoW" {
         return None;
     }
-    let flavor = body["game"]["flavor"].as_str().filter(|f| !f.is_empty()).unwrap_or("_retail_");
+    let flavor = if flavor.is_empty() { "_retail_" } else { flavor };
     let g = game_by_code(code)?;
     let errors = game_root(&current_prefix(), g).join(flavor).join("Errors");
     let path = newest_crash(&errors, SystemTime::now(), CRASH_WINDOW_SECS)?;
@@ -1107,6 +1106,7 @@ fn iso(secs: u64) -> String {
 
 /// Why a report could not be built: a request that makes no sense, or a game whose build the
 /// launcher cannot read (the site files run reports under the build and refuses one without).
+#[derive(Debug)]
 enum BuildError {
     Invalid(String),
     UnknownBuild(String),
@@ -1213,41 +1213,83 @@ pub fn report_body(kind: String, game: Option<String>, outcome: Option<String>, 
     build(kind, game, outcome, comment).map_err(BuildError::text)
 }
 
-fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, BuildError> {
+/// What the machine itself contributes to a report body: the profile, the builds, the log and
+/// WoW's crash file. `live` fills it from the machine; a test stands in for it, so the fields a
+/// report carries (REPORTING.md) can be checked without a prefix, a log or a graphics card.
+struct Parts {
+    install_id: String,
+    user_token: String,
+    created_at: String,
+    system: SystemProfile,
+    battlenet: BattlenetInfo,
+    game: Option<GameInfo>,
+    lab: Vec<String>,
+    log: Option<String>,
+    crash: Option<String>,
+}
+
+/// The machine's own part of a report: probed here, and only what the type needs. The log and the
+/// crash file go with problem reports only, so an `ok` report never reads them.
+fn live(kind: &str, game: Option<&str>, outcome: Option<&str>) -> Parts {
+    let game = game.filter(|c| !c.is_empty()).and_then(game_info);
+    let problem = is_problem(kind, outcome);
+    // A failed launch carries the last 120 log lines, other problem reports the last 200.
+    let log = problem.then(|| log_tail(if kind == "launch" { 120 } else { 200 }));
+    let crash = match &game {
+        Some(g) if problem => crash_file(&g.code, &g.flavor),
+        _ => None,
+    };
+    Parts {
+        install_id: install_id(),
+        user_token: user_token(),
+        created_at: now_iso(),
+        system: system_profile(),
+        battlenet: battlenet_info(),
+        game,
+        lab: report_lab(kind),
+        log,
+        crash,
+    }
+}
+
+/// Fill a report body from the request and the machine's part of it. Every field here is in
+/// REPORTING.md, and the contract test pins this function to that list: a field added here
+/// without a line there fails the build.
+fn assemble(kind: &str, outcome: Option<&str>, comment: Option<&str>, parts: Parts) -> Result<serde_json::Value, BuildError> {
     let invalid = |why: &str| BuildError::Invalid(why.into());
-    if !matches!(kind.as_str(), "bug" | "run" | "launch") {
+    if !matches!(kind, "bug" | "run" | "launch") {
         return Err(invalid("kind must be bug, run or launch"));
     }
     let mut body = serde_json::json!({
         "schema": 1,
         "type": kind,
-        "install_id": install_id(),
-        "user_token": user_token(),
+        "install_id": parts.install_id,
+        "user_token": parts.user_token,
         "launcher_version": env!("CARGO_PKG_VERSION"),
-        "created_at": now_iso(),
-        "system": system_profile(),
-        "battlenet": battlenet_info(),
+        "created_at": parts.created_at,
+        "system": parts.system,
+        "battlenet": parts.battlenet,
     });
-    let lab = report_lab(&kind);
-    mark_lab(&mut body, &lab);
-    if let Some(code) = game.as_deref().filter(|c| !c.is_empty()) {
-        if let Some(g) = game_info(code) {
-            body["game"] = serde_json::to_value(g).map_err(|e| invalid(&e.to_string()))?;
-        }
+    mark_lab(&mut body, &parts.lab);
+    if let Some(g) = &parts.game {
+        body["game"] = serde_json::to_value(g).map_err(|e| invalid(&e.to_string()))?;
     }
+    // The log and the crash file belong to problem reports: `bug`, and `run` with `issues` or
+    // `broken`. A launch has no game, so it never carries a crash file.
+    let problem = is_problem(kind, outcome);
     if kind == "launch" {
         let o = outcome.unwrap_or_default();
-        if !matches!(o.as_str(), "ok" | "failed") {
+        if !matches!(o, "ok" | "failed") {
             return Err(invalid("launch outcome must be ok or failed"));
         }
         body["target"] = serde_json::Value::String("battlenet".into());
-        body["outcome"] = serde_json::Value::String(o.clone());
-        if o == "failed" {
-            body["log"] = serde_json::Value::String(log_tail(120));
+        body["outcome"] = serde_json::Value::String(o.into());
+        if problem {
+            body["log"] = serde_json::Value::String(parts.log.unwrap_or_default());
         }
     } else if kind == "run" {
         let o = outcome.unwrap_or_default();
-        if !matches!(o.as_str(), "perfect" | "issues" | "broken" | "ok") {
+        if !matches!(o, "perfect" | "issues" | "broken" | "ok") {
             return Err(invalid("outcome must be perfect, issues, broken or ok"));
         }
         let (code, flavor) = (body["game"]["code"].as_str().unwrap_or_default(), body["game"]["flavor"].as_str().unwrap_or_default());
@@ -1255,29 +1297,34 @@ fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: O
             return Err(invalid("sessions on test and beta realms are not reported"));
         }
         if body["game"]["version"].as_str().map_or(true, str::is_empty) {
-            let name = game.as_deref().map(split_game).and_then(|(code, flavor)| game_by_code(code).map(|g| game_name(g, flavor))).unwrap_or_else(|| "the game".to_string());
+            let name = parts.game.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "the game".to_string());
             return Err(BuildError::UnknownBuild(format!(
                 "The launcher cannot tell which build of {name} is installed, so the site has nothing to file this report under. Please tell BlizzNux through \"Report a problem\" in Settings."
             )));
         }
-        if is_problem("run", Some(&o)) {
-            body["log"] = serde_json::Value::String(log_tail(200));
-            if let Some(c) = crash_file(&body) {
+        if problem {
+            body["log"] = serde_json::Value::String(parts.log.unwrap_or_default());
+            if let Some(c) = parts.crash {
                 body["crash"] = serde_json::Value::String(c);
             }
         }
-        body["outcome"] = serde_json::Value::String(o);
-        body["comment"] = serde_json::Value::String(scrub(&comment.unwrap_or_default()).chars().take(2000).collect());
+        body["outcome"] = serde_json::Value::String(o.into());
+        body["comment"] = serde_json::Value::String(scrub(comment.unwrap_or_default()).chars().take(2000).collect());
     } else {
-        body["log"] = serde_json::Value::String(log_tail(200));
-        if let Some(c) = crash_file(&body) {
+        body["log"] = serde_json::Value::String(parts.log.unwrap_or_default());
+        if let Some(c) = parts.crash {
             body["crash"] = serde_json::Value::String(c);
         }
         if let Some(c) = comment.filter(|c| !c.is_empty()) {
-            body["comment"] = serde_json::Value::String(scrub(&c).chars().take(2000).collect());
+            body["comment"] = serde_json::Value::String(scrub(c).chars().take(2000).collect());
         }
     }
     Ok(body)
+}
+
+fn build(kind: String, game: Option<String>, outcome: Option<String>, comment: Option<String>) -> Result<serde_json::Value, BuildError> {
+    let parts = live(&kind, game.as_deref(), outcome.as_deref());
+    assemble(&kind, outcome.as_deref(), comment.as_deref(), parts)
 }
 
 /// Why a report was not delivered: the site refused this report, the site takes reports only
@@ -2499,6 +2546,122 @@ mod tests {
         assert!(!is_problem("run", Some("perfect")));
         assert!(!is_problem("run", Some("ok")));
         assert!(!is_problem("run", None));
+    }
+
+    /// The fields of a body, sorted: the key set REPORTING.md documents for its type.
+    fn fields(body: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = body.as_object().expect("a report body is an object").keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// The machine's part of a body, filled in by the test: nothing is probed, so the fields each
+    /// report type carries can be checked on any machine. Every optional part is there, so a type
+    /// that must not carry one shows it by leaving it out.
+    fn machine() -> Parts {
+        Parts {
+            install_id: "0a4e1c52-7ab0-4a5c-9d34-0f7f5a3e9c11".into(),
+            user_token: "token".into(),
+            created_at: "2026-11-21T10:00:00Z".into(),
+            system: SystemProfile {
+                distro: "CachyOS Linux".into(),
+                kernel: "7.2.8-1-cachyos".into(),
+                desktop: "KDE".into(),
+                session: "wayland".into(),
+                cpu: "AMD Ryzen 7 7840HS".into(),
+                ram_gb: 16,
+                gpus: vec![Gpu { vendor: "amd".into(), name: "Radeon 780M".into(), driver: "mesa 26.2.4".into() }],
+                proton: "cachyos-11.0-20260703-slr".into(),
+                umu: "1.4.4".into(),
+                runtime: "steamrt4 4.0.20260928.262390".into(),
+                prefix_kind: "blizznux".into(),
+            },
+            battlenet: BattlenetInfo { build: "17896".into(), version: "2.53.4.17896".into() },
+            game: Some(GameInfo { code: "WoW".into(), name: "World of Warcraft".into(), flavor: "_retail_".into(), version: "12.0.1.65432".into() }),
+            lab: Vec::new(),
+            log: Some("=== 2026-11-21T09:59:00Z ===\nException: ACCESS_VIOLATION".into()),
+            crash: Some("Exception: ACCESS_VIOLATION".into()),
+        }
+    }
+
+    #[test]
+    fn a_bug_report_carries_the_documented_fields() {
+        let body = assemble("bug", None, Some("it broke"), machine()).unwrap();
+        assert_eq!(
+            fields(&body),
+            ["battlenet", "comment", "crash", "created_at", "game", "install_id", "launcher_version", "log", "schema", "system", "type", "user_token"]
+        );
+        // No game to attach a crash file to, no comment, no fresh crash file: none of them is sent.
+        let mut p = machine();
+        p.game = None;
+        p.crash = None;
+        let body = assemble("bug", None, Some(""), p).unwrap();
+        assert_eq!(fields(&body), ["battlenet", "created_at", "install_id", "launcher_version", "log", "schema", "system", "type", "user_token"]);
+    }
+
+    #[test]
+    fn a_run_report_carries_the_log_and_crash_only_on_problems() {
+        let run = |outcome| assemble("run", Some(outcome), Some(""), machine()).unwrap();
+        for outcome in ["perfect", "ok"] {
+            let body = run(outcome);
+            assert_eq!(
+                fields(&body),
+                ["battlenet", "comment", "created_at", "game", "install_id", "launcher_version", "outcome", "schema", "system", "type", "user_token"]
+            );
+            assert_eq!(body["comment"], "");
+        }
+        for outcome in ["issues", "broken"] {
+            let body = run(outcome);
+            assert_eq!(
+                fields(&body),
+                ["battlenet", "comment", "crash", "created_at", "game", "install_id", "launcher_version", "log", "outcome", "schema", "system", "type", "user_token"]
+            );
+        }
+    }
+
+    #[test]
+    fn a_launch_report_carries_the_log_only_when_it_failed() {
+        let launch = |outcome| {
+            let mut p = machine();
+            p.game = None;
+            assemble("launch", Some(outcome), Some("ignored"), p).unwrap()
+        };
+        let ok = launch("ok");
+        assert_eq!(fields(&ok), ["battlenet", "created_at", "install_id", "launcher_version", "outcome", "schema", "system", "target", "type", "user_token"]);
+        let failed = launch("failed");
+        // No game, so no crash file, and a launch carries no comment.
+        assert_eq!(fields(&failed), ["battlenet", "created_at", "install_id", "launcher_version", "log", "outcome", "schema", "system", "target", "type", "user_token"]);
+    }
+
+    #[test]
+    fn a_labs_setting_adds_the_lab_field_and_nothing_else() {
+        let mut p = machine();
+        p.lab = vec!["wow64".into()];
+        let body = assemble("bug", None, None, p).unwrap();
+        assert_eq!(body["lab"], serde_json::json!(["wow64"]));
+        let plain = assemble("bug", None, None, machine()).unwrap();
+        assert!(plain.get("lab").is_none());
+        assert_eq!(fields(&body).len(), fields(&plain).len() + 1);
+    }
+
+    #[test]
+    fn a_report_the_launcher_never_sends_is_still_refused() {
+        assert!(matches!(assemble("bogus", None, None, machine()), Err(BuildError::Invalid(_))));
+        assert!(matches!(assemble("launch", Some("perfect"), None, machine()), Err(BuildError::Invalid(_))));
+        assert!(matches!(assemble("run", Some("failed"), None, machine()), Err(BuildError::Invalid(_))));
+        let mut ptr = machine();
+        if let Some(g) = &mut ptr.game {
+            g.flavor = "_ptr_".into();
+        }
+        assert!(matches!(assemble("run", Some("ok"), None, ptr), Err(BuildError::Invalid(_))));
+        let mut unknown = machine();
+        if let Some(g) = &mut unknown.game {
+            g.version = String::new();
+        }
+        match assemble("run", Some("ok"), None, unknown) {
+            Err(BuildError::UnknownBuild(why)) => assert!(why.contains("World of Warcraft")),
+            _ => panic!("a run report without a build must be refused"),
+        }
     }
 
     #[test]

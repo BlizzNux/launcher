@@ -57,7 +57,8 @@ local stub); the default is the URL above.
   "outcome": "perfect" | "issues" | "broken" | "ok" | "failed",
   "comment": "free text from the user, may be empty",
   "lab": ["wow64"],             // optional: the Labs settings that were on, absent when none was
-  "log": "last lines of the launcher log (repeats folded as \"(×N) …\"), problem reports only, paths scrubbed"
+  "log": "last lines of the launcher log (repeats folded as \"(×N) …\"), problem reports only, paths scrubbed",
+  "crash": "WoW's crash file, problem reports about WoW only, at most 12 KB, scrubbed like log"
 }
 ```
 
@@ -109,6 +110,14 @@ with `issues` or `broken` (the last 200 lines), and a `failed` launch (the last 
 is absent for `perfect` and `ok` runs and `ok` launches. Logs on `issues` and `broken` runs are
 shown publicly in the game's thread, as failed launches already show theirs; the launcher's
 preview says so before the user sends.
+
+`crash` rides along with `log` on problem reports about World of Warcraft: a `bug` for a WoW
+game, and a `run` with `issues` or `broken`. It is the newest `.txt` file in that version's
+`Errors` folder when one was written in the last six hours, as its last 150 lines cut to at most
+12 KB. It is scrubbed like `log` (home paths become `~`), and its Windows user and computer names
+are removed. It is absent when there is no fresh crash file, for other games, for a bug report
+that is not tied to a game, and on `launch` reports (they have no game). The site keeps it
+together with the log: on a crash it is the part that says what went wrong.
 
 Report types and when the launcher sends them. Every type needs a logged-in launcher: the
 automatic ones are only sent by a linked launcher anyway, and a report the user sends while
