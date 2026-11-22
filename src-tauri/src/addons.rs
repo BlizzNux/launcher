@@ -261,9 +261,88 @@ pub fn open_addons_folder(addons_dir: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// A fresh folder next to AddOns that one archive is unpacked into, so a refused entry
+/// leaves AddOns exactly as it was. Removed however the install ends.
+struct Staging {
+    path: PathBuf,
+}
+
+impl Staging {
+    fn new(addons_dir: &Path) -> Result<Staging, String> {
+        use std::os::unix::fs::DirBuilderExt;
+        let parent = addons_dir.parent().ok_or("cannot install next to that AddOns folder")?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = parent.join(format!(".blizznux-addon-{}-{nanos}", std::process::id()));
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&path).map_err(|e| e.to_string())?;
+        Ok(Staging { path })
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Refuse a top-level destination that would be written through a link. AddOns itself is
+/// resolved before this runs, so only a symlink planted inside it matters: that must never
+/// carry an install somewhere else. Errors name the entry, so the user knows what failed.
+fn check_addon_destination(addons_dir: &Path, top: &str) -> Result<(), String> {
+    let mut parts = Path::new(top).components();
+    if !matches!(parts.next(), Some(std::path::Component::Normal(_))) || parts.next().is_some() {
+        return Err("archive contains an unsafe path".into());
+    }
+    let meta = match fs::symlink_metadata(addons_dir.join(top)) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!("{top} in AddOns is a symlink; refusing to install through it"));
+    }
+    Ok(())
+}
+
+/// Move one unpacked top-level entry into AddOns. An existing destination is removed only
+/// after the checks above passed, and only with `rename`, so nothing is copied through it.
+fn move_into_place(work: &Path, addons_dir: &Path, top: &str) -> Result<(), String> {
+    let src = work.join(top);
+    let dst = addons_dir.join(top);
+    let existing = fs::symlink_metadata(&dst).ok();
+    if let Some(meta) = &existing {
+        if meta.file_type().is_symlink() {
+            return Err(format!("{top} in AddOns is a symlink; refusing to install through it"));
+        }
+        if src.is_dir() && !meta.is_dir() {
+            return Err(format!("{top} in AddOns is not a folder; refusing to replace it"));
+        }
+    }
+    if let Some(meta) = existing {
+        if meta.is_dir() {
+            fs::remove_dir_all(&dst).map_err(|e| e.to_string())?;
+        } else {
+            fs::remove_file(&dst).map_err(|e| e.to_string())?;
+        }
+    }
+    fs::rename(&src, &dst).map_err(|e| e.to_string())
+}
+
 /// Unpack an addon archive into AddOns. The archive must contain addon folders with a TOC
 /// at their top level (the format every addon site and the BigWigs packager produce).
+///
+/// It is unpacked into a fresh folder next to AddOns and only then moved into place, so a
+/// refused entry fails the whole install with nothing written: no half-installed addon.
 fn install_archive(addons_dir: &Path, bytes: &[u8]) -> Result<Vec<String>, String> {
+    // AddOns itself may be a symlink the user set up, for a game on another disk; a ZIP
+    // cannot make one. Resolve it, so the staging folder, the checks and the renames all
+    // work on the real folder and stay on its filesystem.
+    let addons_dir = fs::canonicalize(addons_dir).map_err(|e| format!("cannot open the AddOns folder: {e}"))?;
+    let addons_dir = addons_dir.as_path();
     let reader = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(reader).map_err(|_| "that file is not a ZIP archive".to_string())?;
     // Find top-level folders and make sure at least one holds a .toc file.
@@ -283,11 +362,14 @@ fn install_archive(addons_dir: &Path, bytes: &[u8]) -> Result<Vec<String>, Strin
     if !has_toc {
         return Err("this archive doesn't look like a WoW addon: no folder with a .toc file at the top level".into());
     }
+    let staging = Staging::new(addons_dir)?;
+    let work = staging.path.join("archive");
+    fs::create_dir(&work).map_err(|e| e.to_string())?;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| e.to_string())?;
         let Some(rel) = f.enclosed_name().map(|p| p.to_path_buf()) else { return Err("archive contains an unsafe path".into()) };
-        let dest = addons_dir.join(&rel);
-        if !dest.starts_with(addons_dir) {
+        let dest = work.join(&rel);
+        if !dest.starts_with(&work) {
             return Err("archive contains an unsafe path".into());
         }
         if f.is_dir() {
@@ -299,7 +381,14 @@ fn install_archive(addons_dir: &Path, bytes: &[u8]) -> Result<Vec<String>, Strin
         }
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        // Inside our own fresh folder, so no entry can land on a link someone planted.
         fs::write(&dest, buf).map_err(|e| e.to_string())?;
+    }
+    for top in &tops {
+        check_addon_destination(addons_dir, top)?;
+    }
+    for top in &tops {
+        move_into_place(&work, addons_dir, top)?;
     }
     Ok(tops)
 }
@@ -351,6 +440,80 @@ fn pick_asset_for_flavor<'a>(assets: &'a [serde_json::Value], flavor: &str) -> O
     .or_else(|| zips.first().copied())
 }
 
+/// The hosts a GitHub release download may be sent to. github.com serves the asset and hands
+/// off to GitHub's object store; a link that points anywhere else stops there.
+const DOWNLOAD_HOSTS: [&str; 5] = [
+    "github.com",
+    "api.github.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+];
+
+/// GitHub's object stores live under `*.githubusercontent.com`, one subdomain per asset, so
+/// the whole subdomain space is allowed and the bare domain is not.
+fn redirect_host_allowed(host: &str) -> bool {
+    const SUFFIX: &str = ".githubusercontent.com";
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    DOWNLOAD_HOSTS.contains(&host.as_str()) || (host.len() > SUFFIX.len() && host.ends_with(SUFFIX))
+}
+
+/// Redirects one download may follow. Five covers the GitHub release hand-off, with room.
+const MAX_DOWNLOAD_REDIRECTS: usize = 5;
+
+/// Follow a GitHub download's redirects, but only onto those hosts, and no more than five.
+fn github_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_DOWNLOAD_REDIRECTS {
+            attempt.error("too many redirects")
+        } else if attempt.url().host_str().is_some_and(redirect_host_allowed) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// The decision for one redirect of a direct download: the user picked the first host, so
+/// any host may answer, but every hop must stay on https and five hops is the limit.
+fn direct_hop_allowed(hops: usize, next: &url::Url) -> bool {
+    hops < MAX_DOWNLOAD_REDIRECTS && next.scheme() == "https"
+}
+
+/// Follow a direct download's redirects anywhere, over https, no more than five hops.
+fn https_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let hops = attempt.previous().len();
+        if hops >= MAX_DOWNLOAD_REDIRECTS {
+            attempt.error("too many redirects")
+        } else if direct_hop_allowed(hops, attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// Only a 2xx download is read. A redirect a policy stopped is refused by its status.
+fn download_status(status: reqwest::StatusCode) -> Result<(), String> {
+    if status.is_success() {
+        Ok(())
+    } else if status.is_redirection() {
+        Err(format!("download redirected (HTTP {status}) to an address that is not allowed; refused"))
+    } else {
+        Err(format!("download failed: HTTP {status}"))
+    }
+}
+
+/// The client one download uses: the same agent everywhere, with the policy that fits it.
+fn download_client(policy: reqwest::redirect::Policy) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
+        .redirect(policy)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 /// Install from a link: a direct .zip URL, or a GitHub repository / release page.
 #[tauri::command]
 pub async fn install_addon_url(addons_dir: String, flavor: String, family: Option<String>, url: String) -> Result<Vec<String>, String> {
@@ -360,12 +523,11 @@ pub async fn install_addon_url(addons_dir: String, flavor: String, family: Optio
     if u.scheme() != "https" {
         return Err("only https links are supported".into());
     }
-    let client = reqwest::Client::builder()
-        .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| e.to_string())?;
     let mut download = u.to_string();
+    // A GitHub repository link goes through the API, and its asset stays on GitHub's hosts.
+    let mut github_client = None;
     if u.host_str() == Some("github.com") && !download.ends_with(".zip") {
+        let client = download_client(github_redirect_policy())?;
         let parts: Vec<&str> = u.path().trim_matches('/').split('/').collect();
         if parts.len() < 2 {
             return Err("GitHub link must point at a repository".into());
@@ -376,11 +538,16 @@ pub async fn install_addon_url(addons_dir: String, flavor: String, family: Optio
         download = pick_asset_for_flavor(&assets, &flavor)
             .map(|s| s.to_string())
             .ok_or("the latest release has no .zip asset; download it manually and use Install from ZIP")?;
+        github_client = Some(client);
     }
+    // A direct .zip link is the user's own choice of host, so it may be redirected anywhere
+    // over https; an asset the GitHub API named is held to GitHub's hosts.
+    let client = match github_client {
+        Some(client) => client,
+        None => download_client(https_redirect_policy())?,
+    };
     let resp = client.get(&download).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("download failed: HTTP {}", resp.status()));
-    }
+    download_status(resp.status())?;
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     if bytes.len() > 200 * 1024 * 1024 {
         return Err("archive is larger than 200 MB; refusing".into());
@@ -537,6 +704,7 @@ mod tests {
     #[test]
     fn installs_a_proper_addon_archive() {
         let dir = std::env::temp_dir().join(format!("blizznux-addons-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let z = zip_with(&[("MyAddon/MyAddon.toc", "## Title: My |cff00ff00Addon|r\n## Version: 1.2.3\n"), ("MyAddon/core.lua", "-- lua")]);
         let tops = install_archive(&dir, &z).unwrap();
@@ -545,7 +713,73 @@ mod tests {
         let toc = fs::read_to_string(find_toc(&dir.join("MyAddon")).unwrap()).unwrap();
         assert_eq!(clean_title(&toc_field(&toc, "Title")), "My Addon");
         assert_eq!(toc_field(&toc, "Version"), "1.2.3");
+        // The update path replaces what was there and leaves no staging folder behind.
+        let z = zip_with(&[("MyAddon/MyAddon.toc", "## Title: My Addon\n## Version: 1.3.0\n")]);
+        assert_eq!(install_archive(&dir, &z).unwrap(), vec!["MyAddon".to_string()]);
+        assert!(!dir.join("MyAddon/core.lua").exists(), "the old tree is replaced, not merged");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_symlinked_addon_folder_is_refused_and_addons_stays_as_it_was() {
+        let base = std::env::temp_dir().join(format!("blizznux-addons-test3-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let addons = base.join("AddOns");
+        let elsewhere = base.join("elsewhere");
+        fs::create_dir_all(&addons).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, addons.join("MyAddon")).unwrap();
+        let z = zip_with(&[("MyAddon/MyAddon.toc", "## Title: My Addon\n"), ("MyAddon/core.lua", "-- lua")]);
+        let err = install_archive(&addons, &z).unwrap_err();
+        assert!(err.contains("MyAddon") && err.contains("symlink"), "names the entry: {err}");
+        assert!(addons.join("MyAddon").symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing is written through the link");
+        assert_eq!(fs::read_dir(&addons).unwrap().count(), 1, "no partial addon folder in AddOns");
+        assert_eq!(fs::read_dir(&base).unwrap().count(), 2, "no staging folder left behind");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_addons_folder_that_is_a_symlink_installs_into_its_target() {
+        let base = std::env::temp_dir().join(format!("blizznux-addons-test4-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real = base.join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = base.join("AddOns");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let z = zip_with(&[("Mine/Mine.toc", "## Title: Mine\n"), ("Mine/core.lua", "-- lua")]);
+        assert_eq!(install_archive(&link, &z).unwrap(), vec!["Mine".to_string()]);
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink(), "the user's link is left as it was");
+        assert!(real.join("Mine/core.lua").is_file(), "the addon lands in the link's target");
+        assert_eq!(fs::read_dir(&real).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&base).unwrap().count(), 2, "no staging folder left behind");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_direct_download_redirect_is_https_only_and_stops_after_five_hops() {
+        let https = url::Url::parse("https://cdn.example.com/addon.zip").unwrap();
+        let http = url::Url::parse("http://cdn.example.com/addon.zip").unwrap();
+        assert!(direct_hop_allowed(0, &https), "the user's own host may redirect over https");
+        assert!(direct_hop_allowed(MAX_DOWNLOAD_REDIRECTS - 1, &https), "the fifth hop is still followed");
+        assert!(!direct_hop_allowed(0, &http), "a hop to plain http is never followed");
+        assert!(!direct_hop_allowed(MAX_DOWNLOAD_REDIRECTS, &https), "the sixth hop is refused");
+        assert!(!direct_hop_allowed(9, &http));
+    }
+
+    #[test]
+    fn a_download_redirect_is_only_followed_onto_github_hosts() {
+        for host in ["github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "raw.githubusercontent.com"] {
+            assert!(redirect_host_allowed(host), "{host} carries GitHub release downloads");
+        }
+        for host in ["evil.example", "github.com.evil.example", "githubusercontent.com", "notgithubusercontent.com", "github.com/"] {
+            assert!(!redirect_host_allowed(host), "{host} is not a GitHub download host");
+        }
+        let refused = download_status(reqwest::StatusCode::FOUND).unwrap_err();
+        assert!(refused.contains("302") && refused.contains("redirect"), "{refused}");
+        assert_eq!(download_status(reqwest::StatusCode::NOT_FOUND), Err("download failed: HTTP 404 Not Found".to_string()));
+        assert_eq!(download_status(reqwest::StatusCode::PARTIAL_CONTENT), Ok(()));
     }
 
     #[test]
@@ -559,6 +793,7 @@ mod tests {
         let traversal = zip_with(&[("Evil/Evil.toc", "## Title: x"), ("../escape.txt", "x")]);
         assert!(install_archive(&dir, &traversal).is_err());
         assert!(!dir.parent().unwrap().join("escape.txt").exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "a refused archive writes nothing");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -672,6 +907,7 @@ pub async fn wowup_install() -> Result<String, String> {
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let client = reqwest::Client::builder()
         .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
+        .redirect(github_redirect_policy())
         .build()
         .map_err(|e| e.to_string())?;
     let rel: serde_json::Value = client
@@ -692,9 +928,7 @@ pub async fn wowup_install() -> Result<String, String> {
 
     let tmp = dir.join("WowUp-CF.AppImage.part");
     let mut resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("download failed: HTTP {}", resp.status()));
-    }
+    download_status(resp.status())?;
     let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
     let mut done: u64 = 0;
     let mut last_written: u64 = 0;

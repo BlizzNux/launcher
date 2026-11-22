@@ -109,6 +109,18 @@ fn script_path(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// Only a 2xx reply has a body to read. A redirect is refused by name and never followed,
+/// so the answer the launcher reads cannot come from another host.
+fn fetch_status(status: reqwest::StatusCode) -> Result<(), String> {
+    if status.is_success() {
+        Ok(())
+    } else if status.is_redirection() {
+        Err(format!("the site redirected (HTTP {status}), refused"))
+    } else {
+        Err(format!("HTTP {status}"))
+    }
+}
+
 #[tauri::command]
 async fn fetch_json(url: String) -> Result<serde_json::Value, String> {
     let u: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
@@ -118,6 +130,7 @@ async fn fetch_json(url: String) -> Result<serde_json::Value, String> {
     }
     let client = reqwest::Client::builder()
         .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
     let r = client
@@ -126,9 +139,7 @@ async fn fetch_json(url: String) -> Result<serde_json::Value, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    if !r.status().is_success() {
-        return Err(format!("HTTP {}", r.status()));
-    }
+    fetch_status(r.status())?;
     r.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
 
@@ -1045,6 +1056,17 @@ fn vk32_detail(found: bool, wow64: bool, vendors: &[&str]) -> String {
 #[cfg(test)]
 mod lab_tests {
     use super::*;
+
+    #[test]
+    fn fetch_json_takes_only_a_2xx_reply() {
+        assert_eq!(fetch_status(reqwest::StatusCode::OK), Ok(()));
+        assert_eq!(fetch_status(reqwest::StatusCode::NO_CONTENT), Ok(()));
+        let refused = fetch_status(reqwest::StatusCode::FOUND).unwrap_err();
+        assert!(refused.contains("302") && refused.contains("redirect"), "{refused}");
+        assert!(fetch_status(reqwest::StatusCode::TEMPORARY_REDIRECT).is_err());
+        assert_eq!(fetch_status(reqwest::StatusCode::NOT_FOUND), Err("HTTP 404 Not Found".to_string()));
+        assert!(fetch_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR).is_err());
+    }
 
     #[test]
     fn a_proton_folder_needs_an_executable_proton_file() {

@@ -33,6 +33,8 @@ fn http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(format!("BlizzNux/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
+        // The pairing API answers on blizznux.com itself; a redirect is not an answer.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())
 }
