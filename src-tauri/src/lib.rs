@@ -224,12 +224,37 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     map
 }
 
+const PACKAGER_LAB_KEYS: [&str; 3] = ["LAB_WOW64", "LAB_DIRECT_PROTON", "LAB_BNET_FPS"];
+
+/// Packager locks from the environment (`BLIZZNUX_LAB_*`): `"1"` is on, any other non-empty
+/// value is off, and each locked key also gets `<KEY>_SET=1` so the UI hides that control.
+pub(crate) fn apply_packager_labs(c: &mut BTreeMap<String, String>, env: impl Fn(&str) -> Option<String>) {
+    for key in PACKAGER_LAB_KEYS {
+        if let Some(v) = env(&format!("BLIZZNUX_{key}")).filter(|v| !v.trim().is_empty()) {
+            c.insert(key.into(), if v.trim() == "1" { "1" } else { "0" }.into());
+            c.insert(format!("{key}_SET"), "1".into());
+        }
+    }
+}
+
+pub(crate) fn effective_config() -> BTreeMap<String, String> {
+    let mut c = load_config();
+    apply_packager_labs(&mut c, |k| std::env::var(k).ok());
+    c
+}
+
 #[tauri::command]
 fn read_config() -> BTreeMap<String, String> {
-    let mut c = load_config();
-    // Not a saved setting: tells the window that the packager's BLIZZNUX_PROTON is in charge.
+    let mut c = effective_config();
+    // Not saved settings: tell the window which runtime pieces a packager manages.
     if std::env::var("BLIZZNUX_PROTON").is_ok_and(|v| !v.trim().is_empty()) {
         c.insert("BLIZZNUX_PROTON_SET".into(), "1".into());
+    }
+    if std::env::var("BLIZZNUX_UMU").is_ok_and(|v| !v.trim().is_empty()) {
+        c.insert("BLIZZNUX_UMU_SET".into(), "1".into());
+    }
+    if std::env::var("BLIZZNUX_NO_UPDATE_CHECK").is_ok_and(|v| v.trim() == "1") {
+        c.insert("BLIZZNUX_NO_UPDATE_CHECK".into(), "1".into());
     }
     c
 }
@@ -263,12 +288,20 @@ fn write_config(values: BTreeMap<String, String>) -> Result<(), String> {
     let mut current = load_config();
     for (k, v) in values {
         if k == "LAB_PROTON_DIR" {
+            if std::env::var("BLIZZNUX_PROTON").is_ok_and(|e| !e.trim().is_empty()) {
+                continue;
+            }
             let dir = v.trim().trim_end_matches('/').to_string();
             if !dir.is_empty() {
                 check_proton_dir(&dir)?;
             }
             current.insert(k, dir);
-        } else if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO" | "LAB_WOW64" | "LAB_DIRECT_PROTON" | "LAB_BNET_FPS") {
+        } else if PACKAGER_LAB_KEYS.contains(&k.as_str()) {
+            if std::env::var(format!("BLIZZNUX_{k}")).is_ok_and(|e| !e.trim().is_empty()) {
+                continue;
+            }
+            current.insert(k, v.trim().to_string());
+        } else if matches!(k.as_str(), "OFFLOAD" | "REPORTS_AUTO" | "REPORTS_SHARE" | "BUG_AUTO") {
             current.insert(k, v.trim().to_string());
         }
     }
@@ -423,9 +456,10 @@ fn readiness_blocking() -> Vec<Check> {
     let mut out = Vec::new();
 
     // The wrapper downloads the launcher's own umu-launcher on first use; running it needs python3.
+    let cfg = effective_config();
     let umu = umu_run();
     let python = on_path("python3");
-    let direct = load_config().get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1");
+    let direct = cfg.get("LAB_DIRECT_PROTON").is_some_and(|v| v == "1");
     let packaged = packaged_umu().is_some();
     out.push(Check {
         name: "umu-launcher".into(),
@@ -449,9 +483,17 @@ fn readiness_blocking() -> Vec<Check> {
     // The wrapper downloads the launcher's own Proton on first use; unpacking it needs xz. With a
     // Proton chosen in Labs (or BLIZZNUX_PROTON) nothing is downloaded: that folder must be usable.
     let xz = on_path("xz");
+    let env_proton = std::env::var("BLIZZNUX_PROTON").is_ok_and(|v| !v.trim().is_empty());
     let (ok, detail) = match (reports::custom_proton(), reports::own_proton()) {
         (Some(dir), _) => match check_proton_dir(&dir.display().to_string()) {
-            Ok(()) => (true, "found (the Proton you chose in Labs)".to_string()),
+            Ok(()) => (
+                true,
+                if env_proton {
+                    "found (set by BLIZZNUX_PROTON)".to_string()
+                } else {
+                    "found (the Proton you chose in Labs)".to_string()
+                },
+            ),
             Err(e) => (false, e),
         },
         (None, Some(_)) => (true, "found (the launcher's own build)".to_string()),
@@ -522,7 +564,7 @@ fn readiness_blocking() -> Vec<Check> {
     let needs_nvidia32 = vendors.contains(&"nvidia");
     let needs_mesa32 = vendors.iter().any(|v| *v == "amd" || *v == "intel");
     let vk32 = if in_flatpak { ext32 } else { (!needs_nvidia32 || nvidia32) && (!needs_mesa32 || mesa32) && (nvidia32 || mesa32) };
-    let wow64 = load_config().get("LAB_WOW64").is_some_and(|v| v == "1");
+    let wow64 = cfg.get("LAB_WOW64").is_some_and(|v| v == "1");
     let hint = vendors
         .iter()
         .filter(|v| match **v { "nvidia" => !nvidia32, _ => !mesa32 })
@@ -1163,6 +1205,28 @@ mod lab_tests {
         assert!(executable_file(&umu));
         assert!(!executable_file(&dir));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn packager_labs_env_locks_override_saved_config() {
+        let mut c = BTreeMap::from([
+            ("LAB_WOW64".to_string(), "0".to_string()),
+            ("LAB_DIRECT_PROTON".to_string(), "1".to_string()),
+            ("LAB_BNET_FPS".to_string(), "1".to_string()),
+        ]);
+        apply_packager_labs(&mut c, |k| match k {
+            "BLIZZNUX_LAB_WOW64" => Some("1".into()),
+            "BLIZZNUX_LAB_DIRECT_PROTON" => Some("0".into()),
+            "BLIZZNUX_LAB_BNET_FPS" => Some("   ".into()),
+            _ => None,
+        });
+        assert_eq!(c.get("LAB_WOW64").map(String::as_str), Some("1"));
+        assert_eq!(c.get("LAB_WOW64_SET").map(String::as_str), Some("1"));
+        assert_eq!(c.get("LAB_DIRECT_PROTON").map(String::as_str), Some("0"));
+        assert_eq!(c.get("LAB_DIRECT_PROTON_SET").map(String::as_str), Some("1"));
+        // Blank or unset leaves the user's value alone.
+        assert_eq!(c.get("LAB_BNET_FPS").map(String::as_str), Some("1"));
+        assert!(!c.contains_key("LAB_BNET_FPS_SET"));
     }
 
     #[test]
