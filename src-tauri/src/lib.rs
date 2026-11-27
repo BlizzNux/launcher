@@ -224,12 +224,51 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
     map
 }
 
+/// Reads Wine's `LogPixels` DWORD from a prefix's `user.reg`, if set to a sane DPI.
+fn parse_prefix_dpi(text: &str) -> Option<u32> {
+    let mut in_section = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_section = trimmed.starts_with("[Control Panel\\\\Desktop]")
+                || trimmed.starts_with("[Software\\\\Wine\\\\Fonts]");
+            continue;
+        }
+        if in_section {
+            if let Some(hex) = trimmed.strip_prefix("\"LogPixels\"=dword:") {
+                if let Ok(dpi) = u32::from_str_radix(hex.trim(), 16) {
+                    if (72..=384).contains(&dpi) {
+                        return Some(dpi);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn current_dpi() -> Option<u32> {
+    if let Ok(reg) = fs::read_to_string(current_prefix().join("user.reg")) {
+        if let Some(dpi) = parse_prefix_dpi(&reg) {
+            return Some(dpi);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(dpi) = glprobe::detected_dpi() {
+        return Some(dpi);
+    }
+    None
+}
+
 #[tauri::command]
 fn read_config() -> BTreeMap<String, String> {
     let mut c = load_config();
     // Not a saved setting: tells the window that the packager's BLIZZNUX_PROTON is in charge.
     if std::env::var("BLIZZNUX_PROTON").is_ok_and(|v| !v.trim().is_empty()) {
         c.insert("BLIZZNUX_PROTON_SET".into(), "1".into());
+    }
+    if let Some(dpi) = current_dpi() {
+        c.insert("CURRENT_DPI".into(), dpi.to_string());
     }
     c
 }
@@ -1327,5 +1366,19 @@ mod lab_tests {
         assert!(!dir.exists(), "the staged folder is still there: {}", dir.display());
         assert!(!other.exists(), "the staged folder is still there: {}", other.display());
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn parse_prefix_dpi_reads_logpixels_dword() {
+        let reg = "\
+WINE REGISTRY Version 2
+
+[Control Panel\\\\Desktop] 1700000000
+\"LogPixels\"=dword:00000078
+";
+        assert_eq!(parse_prefix_dpi(reg), Some(120));
+        assert_eq!(parse_prefix_dpi("[Other]\n\"LogPixels\"=dword:00000078\n"), None);
+        assert_eq!(parse_prefix_dpi("[Software\\\\Wine\\\\Fonts]\n\"LogPixels\"=dword:00000090\n"), Some(144));
+        assert_eq!(parse_prefix_dpi("[Control Panel\\\\Desktop]\n\"LogPixels\"=dword:00000010\n"), None);
     }
 }

@@ -309,6 +309,106 @@ bnet_fps_config() {
 	fi
 }
 
+# Battle.net's installer and Chromium/Qt UI can draw black windows or leave stale widgets behind on
+# redraw under Wine/Proton without simulated copy-on-write mappings. A value in the environment wins.
+bnet_env() {
+	export WINE_SIMULATE_WRITECOPY=${WINE_SIMULATE_WRITECOPY:-1}
+}
+
+# True when COSMIC leaves XWayland windows unscaled (descale_xwayland is true, Enabled or Fractional).
+cosmic_descale_xwayland() {
+	local f=${XDG_CONFIG_HOME:-$HOME/.config}/cosmic/com.system76.CosmicComp/v1/descale_xwayland
+	[[ -r $f ]] || return 1
+	local v; v=$(tr -d '[:space:]' < "$f" 2>/dev/null || true)
+	[[ $v == true || $v == Enabled || $v == Fractional || $v == Enabled\(* ]]
+}
+
+# Prints a suggested Windows DPI (72..=384) for Battle.net inside Wine, or nothing when 96 DPI is fine:
+# BLIZZNUX_DPI always wins; otherwise auto-detects HiDPI scaling when the compositor leaves XWayland
+# unscaled (COSMIC descale_xwayland or Hyprland force_zero_scaling), unless PROTON_ENABLE_WAYLAND=1.
+detect_dpi() {
+	local d=${BLIZZNUX_DPI:-}
+	if [[ $d =~ ^[0-9]+$ ]] && (( d >= 72 && d <= 384 )); then
+		echo "$d"; return 0
+	fi
+	[[ ${PROTON_ENABLE_WAYLAND:-} != 1 ]] || return 0
+	local dpi=""
+	if [[ :${XDG_CURRENT_DESKTOP:-}: == *:COSMIC:* ]] && cosmic_descale_xwayland && command -v cosmic-randr >/dev/null; then
+		dpi=$(cosmic-randr list 2>/dev/null | awk '
+			function flush() {
+				if (en && sc > 0) {
+					if (prim) { best = sc; done = 1 }
+					else if (first == 0) { first = sc }
+				}
+			}
+			/^[^[:space:]]/ {
+				flush()
+				if (done) exit
+				en = index($0, "(enabled)") > 0
+				sc = 0; prim = 0
+				next
+			}
+			/^[[:space:]]+Scale:[[:space:]]*[0-9]+(\.[0-9]+)?%/ {
+				v = $0; sub(/^.*Scale:[[:space:]]*/, "", v); sub(/%.*$/, "", v)
+				sc = v + 0
+			}
+			/^[[:space:]]+Xwayland primary:[[:space:]]*true/ { prim = 1 }
+			END {
+				if (!done) flush()
+				pick = (best > 0) ? best : first
+				if (pick > 100) {
+					d = int((96 * pick + 50) / 100)
+					if (d < 72) d = 72
+					if (d > 384) d = 384
+					print d
+				}
+			}
+		')
+	elif [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] && command -v hyprctl >/dev/null; then
+		local zero; zero=$(hyprctl -j getoption xwayland:force_zero_scaling 2>/dev/null || true)
+		if [[ $zero == *'"int": 1'* || $zero == *'"int":1'* || $zero == *'"bool": true'* || $zero == *'"bool":true'* ]]; then
+			dpi=$(hyprctl monitors 2>/dev/null | awk '
+				/^Monitor / {
+					if (sc > 0) {
+						if (foc) { best = sc; done = 1; exit }
+						else if (first == 0) { first = sc }
+					}
+					sc = 0; foc = 0
+					next
+				}
+				/^[[:space:]]+scale:[[:space:]]*[0-9]+(\.[0-9]+)?/ {
+					v = $0; sub(/^.*scale:[[:space:]]*/, "", v)
+					sc = v + 0
+				}
+				/^[[:space:]]+focused:[[:space:]]*yes/ { foc = 1 }
+				END {
+					if (!done && sc > 0) {
+						if (foc) best = sc
+						else if (first == 0) first = sc
+					}
+					pick = (best > 0) ? best : first
+					if (pick > 1.0) {
+						d = int(96 * pick + 0.5)
+						if (d < 72) d = 72
+						if (d > 384) d = 384
+						print d
+					}
+				}
+			')
+		fi
+	fi
+	[[ -n $dpi ]] && echo "$dpi" || true
+}
+
+# Sets Wine's LogPixels once when the prefix has none yet and the display needs >96 DPI (or BLIZZNUX_DPI is set).
+ensure_default_dpi() {
+	[[ ! -f $PREFIX/user.reg ]] || ! grep -q '"LogPixels"=dword:' "$PREFIX/user.reg" || return 0
+	local dpi; dpi=$(detect_dpi)
+	[[ -n $dpi ]] || return 0
+	log "setting initial prefix DPI to $dpi"
+	cmd_dpi "$dpi"
+}
+
 # Xalia, Proton's controller helper for app windows, is always off: games read controllers natively
 # through Proton, Xalia only drives Battle.net's own window (it wasn't shown to help there) and it costs
 # memory and CPU. A PROTON_USE_XALIA already set in the environment (PROTON_USE_XALIA=1) is never
@@ -366,6 +466,7 @@ run_direct() {
 	export WINEPREFIX=$PREFIX STEAM_COMPAT_DATA_PATH=$PREFIX STEAM_COMPAT_SHADER_PATH=$PREFIX/shadercache \
 		STEAM_COMPAT_CLIENT_INSTALL_PATH=$DATA_DIR/steam SteamAppId=$appid SteamGameId=$appid
 	gpu_env
+	bnet_env
 	xalia_env
 	labs_env
 	local inhibit=()
@@ -380,6 +481,7 @@ run_umu() {
 	local proton; proton=$(find_proton)
 	export WINEPREFIX=$PREFIX PROTONPATH=$proton GAMEID=${GAMEID:-umu-default} STORE=none PROTON_VERB=waitforexitandrun
 	gpu_env
+	bnet_env
 	# Labs (experimental, opt-in). BLIZZNUX_LAB tells the launcher which were on for this session.
 	xalia_env
 	labs_env
@@ -396,6 +498,7 @@ cmd_install() {
 	local setup=$CACHE_DIR/Battle.net-Setup.exe
 	log "downloading the Battle.net installer from Blizzard"
 	curl -fL --retry 3 --progress-bar -o "$setup" "$INSTALLER_URL"
+	ensure_default_dpi
 	log "running the installer: sign in when it asks; Battle.net opens when it is done"
 	if [[ $LAB_DIRECT_PROTON == 1 ]]; then
 		# Without umu, Proton hands a path outside the prefix to a shim that is not there: run a copy inside it.
@@ -421,6 +524,7 @@ cmd_dpi() {
 cmd_launch() {
 	ensure_prefix
 	[[ -f $PREFIX/$LAUNCHER_REL ]] || cmd_install
+	ensure_default_dpi
 	local exe=$PREFIX/$LAUNCHER_REL
 	[[ $LAB_DIRECT_PROTON != 1 ]] || exe=$LAUNCHER_WIN   # direct mode starts it by its Windows path
 	if [[ -n $GAME ]]; then

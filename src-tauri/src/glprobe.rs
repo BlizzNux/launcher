@@ -59,21 +59,123 @@ fn hyprctl(args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The zoom an X11 window needs to look as large as it would on Wayland. Hyprland with
-/// force_zero_scaling leaves X11 apps unscaled; GNOME and KDE scale them themselves.
-fn wanted_zoom() -> f64 {
-    if let Some(z) = env_zoom("BLIZZNUX_ZOOM") {
-        return z;
+fn is_cosmic_desktop(xdg_current_desktop: &str) -> bool {
+    xdg_current_desktop.split(':').any(|part| part.trim().eq_ignore_ascii_case("COSMIC"))
+}
+
+/// COSMIC's `descale_xwayland` config: bool (`true`/`false`) or RON enum (`Enabled`/`Fractional`/`Disabled`).
+fn cosmic_descale_xwayland_value(text: &str) -> bool {
+    let t = text.trim();
+    t == "true" || t == "Enabled" || t == "Fractional" || t.starts_with("Enabled(")
+}
+
+fn cosmic_descale_xwayland() -> bool {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| crate::home().join(".config"));
+    let path = base.join("cosmic/com.system76.CosmicComp/v1/descale_xwayland");
+    std::fs::read_to_string(path).is_ok_and(|t| cosmic_descale_xwayland_value(&t))
+}
+
+/// COSMIC's `cosmic-randr list`: the scale of the enabled XWayland-primary output, else the first enabled output.
+fn cosmic_monitor_scale(text: &str) -> Option<f64> {
+    let mut enabled = false;
+    let mut scale: Option<f64> = None;
+    let mut primary = false;
+    let mut first_scale: Option<f64> = None;
+
+    let flush = |enabled: bool, scale: Option<f64>, primary: bool, first: &mut Option<f64>| -> Option<f64> {
+        if !enabled {
+            return None;
+        }
+        let s = scale?;
+        if primary {
+            return Some(s);
+        }
+        if first.is_none() {
+            *first = Some(s);
+        }
+        None
+    };
+
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.starts_with('\t') && !line.trim().is_empty() {
+            if let Some(found) = flush(enabled, scale, primary, &mut first_scale) {
+                return Some(found);
+            }
+            enabled = line.contains("(enabled)");
+            scale = None;
+            primary = false;
+            continue;
+        }
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Scale:") {
+            let num = rest.trim().trim_end_matches('%').trim();
+            if let Ok(pct) = num.parse::<f64>() {
+                let s = pct / 100.0;
+                if s.is_finite() && s > 0.0 {
+                    scale = Some(s.clamp(0.5, 4.0));
+                }
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("Xwayland primary:") {
+            primary = rest.trim() == "true";
+        }
     }
+    flush(enabled, scale, primary, &mut first_scale).or(first_scale)
+}
+
+fn cosmic_randr_list() -> Option<String> {
+    let out = Command::new("cosmic-randr").arg("list").output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Display scale when the compositor leaves XWayland windows unscaled (Hyprland
+/// `force_zero_scaling` or COSMIC `descale_xwayland`).
+fn xwayland_unscaled_display_scale() -> Option<f64> {
     if env_set("HYPRLAND_INSTANCE_SIGNATURE") {
         let zero = hyprctl(&["-j", "getoption", "xwayland:force_zero_scaling"]);
         if zero.is_some_and(|j| force_zero_scaling(&j)) {
             if let Some(z) = hyprctl(&["-j", "monitors"]).and_then(|j| monitor_scale(&j)) {
-                return z;
+                return Some(z);
             }
         }
     }
-    1.0
+    if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| is_cosmic_desktop(&d))
+        && cosmic_descale_xwayland()
+    {
+        if let Some(z) = cosmic_randr_list().and_then(|t| cosmic_monitor_scale(&t)) {
+            return Some(z);
+        }
+    }
+    None
+}
+
+/// The zoom an X11 window needs to look as large as it would on Wayland. Hyprland with
+/// force_zero_scaling and COSMIC with descale_xwayland leave X11 apps unscaled; GNOME and KDE
+/// scale them themselves.
+fn wanted_zoom() -> f64 {
+    if let Some(z) = env_zoom("BLIZZNUX_ZOOM") {
+        return z;
+    }
+    xwayland_unscaled_display_scale().unwrap_or(1.0)
+}
+
+/// Suggested Windows DPI for Battle.net inside Wine: BLIZZNUX_DPI, or the compositor's scale
+/// when XWayland windows are left unscaled (skipped when PROTON_ENABLE_WAYLAND=1).
+pub(crate) fn detected_dpi() -> Option<u32> {
+    if let Some(dpi) = std::env::var("BLIZZNUX_DPI")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|d| (72..=384).contains(d))
+    {
+        return Some(dpi);
+    }
+    if std::env::var("PROTON_ENABLE_WAYLAND").is_ok_and(|v| v.trim() == "1") {
+        return None;
+    }
+    let scale = xwayland_unscaled_display_scale()?;
+    let dpi = (96.0 * scale).round().clamp(72.0, 384.0) as u32;
+    (dpi > 96).then_some(dpi)
 }
 
 /// What a key press does to the zoom.
@@ -292,5 +394,42 @@ mod tests {
         assert_eq!(monitor_scale(r#"[{"scale":9.0,"focused":true}]"#), Some(4.0));
         assert_eq!(monitor_scale("[]"), None);
         assert_eq!(monitor_scale("oops"), None);
+    }
+
+    #[test]
+    fn cosmic_descale_xwayland_reads_bool_and_enum() {
+        assert!(cosmic_descale_xwayland_value("true\n"));
+        assert!(cosmic_descale_xwayland_value("Enabled"));
+        assert!(cosmic_descale_xwayland_value("Fractional"));
+        assert!(cosmic_descale_xwayland_value("Enabled(All)"));
+        assert!(!cosmic_descale_xwayland_value("false"));
+        assert!(!cosmic_descale_xwayland_value("Disabled"));
+        assert!(!cosmic_descale_xwayland_value(""));
+        assert!(is_cosmic_desktop("COSMIC"));
+        assert!(is_cosmic_desktop("pop:COSMIC"));
+        assert!(!is_cosmic_desktop("GNOME"));
+    }
+
+    #[test]
+    fn cosmic_monitor_scale_prefers_xwayland_primary_enabled_output() {
+        let multi = "\
+HDMI-1 (disabled)
+  Scale: 200%
+  Xwayland primary: true
+DP-2 (enabled)
+  Scale: 100%
+  Xwayland primary: false
+DP-1 (enabled)
+  Scale: 125%
+  Xwayland primary: true
+";
+        assert_eq!(cosmic_monitor_scale(multi), Some(1.25));
+        let no_primary = "\
+DP-2 (enabled)
+  Scale: 150%
+";
+        assert_eq!(cosmic_monitor_scale(no_primary), Some(1.5));
+        assert_eq!(cosmic_monitor_scale("HDMI-1 (disabled)\n  Scale: 200%\n"), None);
+        assert_eq!(cosmic_monitor_scale(""), None);
     }
 }
