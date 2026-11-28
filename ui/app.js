@@ -555,6 +555,7 @@ async function loadConfig() {
   const envProton = !!c.BLIZZNUX_PROTON_SET;
   $("#cfg-lab-proton").disabled = envProton;
   $("#cfg-lab-proton-env").textContent = envProton ? "Set by BLIZZNUX_PROTON." : "";
+  if (c.CURRENT_DPI) $("#dpi").value = c.CURRENT_DPI;
   refreshAccount();
   const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
   off.checked = true;

@@ -107,7 +107,7 @@ done
 runfix() {
 	HOME=$work/home XDG_CONFIG_HOME=$work/home/.config XDG_CACHE_HOME=$work/home/.cache \
 		FIX_LOG=$fixlog FIX_FAIL=${FIX_FAIL:-} BLIZZNUX_NVIDIA_VERSION=${BLIZZNUX_NVIDIA_VERSION:-} \
-		PATH=$stub:/usr/bin:/bin \
+		PATH=$stub:$PATH \
 		bash bin/blizznux-run fix "$@"
 }
 
@@ -181,7 +181,7 @@ BLIZZNUX_NVIDIA_VERSION=$work/nvidia-version fixrun "fix: the NVIDIA package nam
 	|| fail "fix: the driver version line cannot run anything" "$work/pwned exists"
 printf 'no version here\n' > "$work/nvidia-none"
 gotrc=0
-out=$(HOME=$work/home BLIZZNUX_NVIDIA_VERSION=$work/nvidia-none PATH=$stub:/usr/bin:/bin \
+out=$(HOME=$work/home BLIZZNUX_NVIDIA_VERSION=$work/nvidia-none PATH=$stub:$PATH \
 	FIX_LOG=$fixlog bash bin/blizznux-run fix apt-vulkan-nvidia 2>&1) || gotrc=$?
 if [[ $gotrc == 1 && $out == *"NVIDIA driver version could not be read"* ]]; then
 	ok "fix: a missing NVIDIA driver version stops with a message"
@@ -300,5 +300,50 @@ if (( gotrc != 0 )) && [[ -z $left ]]; then
 else
 	fail "fetch_umu: a space in the temp path still cleans up" "want a failure and nothing left, got exit $gotrc, left: $left" "output: $out"
 fi
+
+# ---- Battle.net rendering env and DPI auto-detection ------------------------
+got=$(DEFS=$defs bash -c 'set -euo pipefail; eval "$DEFS"; unset WINE_SIMULATE_WRITECOPY; bnet_env; printf "%s" "$WINE_SIMULATE_WRITECOPY"')
+[[ $got == 1 ]] && ok "bnet_env: defaults WINE_SIMULATE_WRITECOPY=1" \
+	|| fail "bnet_env: defaults WINE_SIMULATE_WRITECOPY=1" "want 1, got '$got'"
+
+got=$(DEFS=$defs WINE_SIMULATE_WRITECOPY=0 bash -c 'set -euo pipefail; eval "$DEFS"; bnet_env; printf "%s" "$WINE_SIMULATE_WRITECOPY"')
+[[ $got == 0 ]] && ok "bnet_env: respects user WINE_SIMULATE_WRITECOPY override" \
+	|| fail "bnet_env: respects user WINE_SIMULATE_WRITECOPY override" "want 0, got '$got'"
+
+mkdir -p "$work/cosmic-cfg/cosmic/com.system76.CosmicComp/v1" "$work/dpi-bin"
+printf 'true\n' > "$work/cosmic-cfg/cosmic/com.system76.CosmicComp/v1/descale_xwayland"
+cat > "$work/dpi-bin/cosmic-randr" <<'RANDR'
+#!/bin/sh
+cat <<'OUT'
+HDMI-1 (disabled)
+  Scale: 200%
+  Xwayland primary: true
+DP-2 (enabled)
+  Scale: 100%
+  Xwayland primary: false
+DP-1 (enabled)
+  Scale: 125%
+  Xwayland primary: true
+OUT
+RANDR
+chmod +x "$work/dpi-bin/cosmic-randr"
+
+got=$(DEFS=$defs XDG_CONFIG_HOME=$work/cosmic-cfg XDG_CURRENT_DESKTOP=COSMIC \
+	BLIZZNUX_DPI="" PROTON_ENABLE_WAYLAND="" PATH=$work/dpi-bin:$PATH \
+	bash -c 'set -euo pipefail; eval "$DEFS"; detect_dpi')
+[[ $got == 120 ]] && ok "detect_dpi: COSMIC descale_xwayland 125% -> 120" \
+	|| fail "detect_dpi: COSMIC descale_xwayland 125% -> 120" "want 120, got '$got'"
+
+got=$(DEFS=$defs XDG_CONFIG_HOME=$work/cosmic-cfg XDG_CURRENT_DESKTOP=COSMIC \
+	BLIZZNUX_DPI=144 PROTON_ENABLE_WAYLAND=1 PATH=$work/dpi-bin:$PATH \
+	bash -c 'set -euo pipefail; eval "$DEFS"; detect_dpi')
+[[ $got == 144 ]] && ok "detect_dpi: BLIZZNUX_DPI wins" \
+	|| fail "detect_dpi: BLIZZNUX_DPI wins" "want 144, got '$got'"
+
+got=$(DEFS=$defs XDG_CONFIG_HOME=$work/cosmic-cfg XDG_CURRENT_DESKTOP=COSMIC \
+	BLIZZNUX_DPI="" PROTON_ENABLE_WAYLAND=1 PATH=$work/dpi-bin:$PATH \
+	bash -c 'set -euo pipefail; eval "$DEFS"; detect_dpi')
+[[ -z $got ]] && ok "detect_dpi: skipped when PROTON_ENABLE_WAYLAND=1" \
+	|| fail "detect_dpi: skipped when PROTON_ENABLE_WAYLAND=1" "want empty, got '$got'"
 
 exit $fails
