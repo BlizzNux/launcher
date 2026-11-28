@@ -59,4 +59,32 @@ got=$(env -u PROTON_USE_XALIA HYPRLAND_INSTANCE_SIGNATURE=x DXVK_CONFIG="dxvk.tr
 want="dxvk.trackPipelineLifetime = True; dxvk.deviceFilter = NVIDIA; [Battle.net.exe]; dxvk.deviceFilter = AMD; dxgi.maxFrameRate = 15"
 if [[ $got == "$want" ]]; then echo "ok   hybrid Hyprland (launcher default)"; else echo "FAIL hybrid Hyprland"; echo "  want: $want"; echo "  got:  $got"; fails=1; fi
 
+# A packager locks a Labs setting from the environment (BLIZZNUX_LAB_*): "1" is on, anything else off,
+# with or without a config file, without overwriting the user's saved values.
+for with_cfg in 0 1; do
+	[[ $with_cfg == 1 ]] && want="1|0|0|/x" || want="1|0|0|"
+	got=$(env BLIZZNUX_LAB_WOW64=1 BLIZZNUX_LAB_DIRECT_PROTON=x BLIZZNUX_LAB_BNET_FPS=0 bash -c '
+		set -euo pipefail
+		eval "$(sed -n "/^load_config()/,/^}/p" bin/blizznux-run)"
+		CONFIG=$(mktemp); rm -f "$CONFIG"
+		[[ $1 != 1 ]] || printf "PREFIX=/x\nLAB_WOW64=0\nLAB_DIRECT_PROTON=1\nLAB_BNET_FPS=1\n" > "$CONFIG"
+		PREFIX=""; LAB_WOW64=0; LAB_DIRECT_PROTON=0; LAB_BNET_FPS=0
+		load_config
+		printf "%s|%s|%s|%s\n" "$LAB_WOW64" "$LAB_DIRECT_PROTON" "$LAB_BNET_FPS" "$PREFIX"' bash "$with_cfg")
+	[[ $with_cfg == 1 ]] && want2="0|1|0|/x" || want2="0|0|0|"
+	got2=$(env BLIZZNUX_LAB_WOW64=1 BLIZZNUX_LAB_DIRECT_PROTON=x BLIZZNUX_LAB_BNET_FPS=0 bash -c '
+		set -euo pipefail
+		eval "$(sed -n "/^load_config()/,/^}/p;/^save_config()/,/^}/p" bin/blizznux-run)"
+		CONFIG_DIR=$(mktemp -d); CONFIG=$CONFIG_DIR/config
+		[[ $1 != 1 ]] || printf "PREFIX=/x\nLAB_WOW64=0\nLAB_DIRECT_PROTON=1\n" > "$CONFIG"
+		PREFIX=""; OFFLOAD=auto; LAB_PROTON_DIR=""; LAB_WOW64=0; LAB_DIRECT_PROTON=0; LAB_BNET_FPS=0
+		load_config; save_config
+		unset BLIZZNUX_LAB_WOW64 BLIZZNUX_LAB_DIRECT_PROTON BLIZZNUX_LAB_BNET_FPS
+		LAB_WOW64=0; LAB_DIRECT_PROTON=0; LAB_BNET_FPS=0; PREFIX=""
+		load_config
+		printf "%s|%s|%s|%s\n" "$LAB_WOW64" "$LAB_DIRECT_PROTON" "$LAB_BNET_FPS" "$PREFIX"' bash "$with_cfg")
+	if [[ $got == "$want" ]]; then echo "ok   labs env lock (config file: $with_cfg)"; else echo "FAIL labs env lock (config file: $with_cfg)"; echo "  want: $want"; echo "  got:  $got"; fails=1; fi
+	if [[ $got2 == "$want2" ]]; then echo "ok   labs env lock not saved (config file: $with_cfg)"; else echo "FAIL labs env lock not saved (config file: $with_cfg)"; echo "  want: $want2"; echo "  got:  $got2"; fails=1; fi
+done
+
 exit $fails

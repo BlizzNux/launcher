@@ -545,16 +545,33 @@ async function checkBattlenet() {
   } catch { /* offline: stay quiet */ }
 }
 
+let packager = { proton: false, umu: false, noUpdateCheck: false };
+
 async function loadConfig() {
   const c = await invoke("read_config");
   $("#cfg-reports-auto").checked = c.REPORTS_AUTO === "1";
   $("#cfg-lab-wow64").checked = c.LAB_WOW64 === "1";
   $("#cfg-lab-direct").checked = c.LAB_DIRECT_PROTON === "1";
   $("#cfg-lab-fps").checked = c.LAB_BNET_FPS === "1";
+  const labItems = [
+    ["lab-wow64-wrap", "cfg-lab-wow64", !!c.LAB_WOW64_SET],
+    ["lab-direct-wrap", "cfg-lab-direct", !!c.LAB_DIRECT_PROTON_SET],
+    ["lab-fps-wrap", "cfg-lab-fps", !!c.LAB_BNET_FPS_SET],
+    ["lab-proton-wrap", "cfg-lab-proton", !!c.BLIZZNUX_PROTON_SET],
+  ];
+  for (const [wrapId, inputId, locked] of labItems) {
+    $(`#${inputId}`).disabled = locked;
+    $(`#${wrapId}`).classList.toggle("hidden", locked);
+  }
+  $("#labs-section").classList.toggle("hidden", labItems.every(([, , locked]) => locked));
   $("#cfg-lab-proton").value = c.LAB_PROTON_DIR || "";
-  const envProton = !!c.BLIZZNUX_PROTON_SET;
-  $("#cfg-lab-proton").disabled = envProton;
-  $("#cfg-lab-proton-env").textContent = envProton ? "Set by BLIZZNUX_PROTON." : "";
+  $("#cfg-lab-proton-env").textContent = c.BLIZZNUX_PROTON_SET ? "Set by BLIZZNUX_PROTON." : "";
+  packager = {
+    proton: !!c.BLIZZNUX_PROTON_SET,
+    umu: !!c.BLIZZNUX_UMU_SET,
+    noUpdateCheck: c.BLIZZNUX_NO_UPDATE_CHECK === "1",
+  };
+  if (packager.noUpdateCheck) $("#update").classList.add("hidden");
   refreshAccount();
   const off = document.querySelector(`input[name=offload][value="${c.OFFLOAD || "auto"}"]`) || document.querySelector('input[name=offload][value="auto"]');
   off.checked = true;
@@ -684,7 +701,11 @@ async function init() {
   $("#cfg-lab-fps").addEventListener("change", saveConfig);
   $("#cfg-lab-proton").addEventListener("change", saveProtonDir);
   $("#do-install").onclick = async () => {
-    $("#setup-status").textContent = "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
+    $("#setup-status").textContent = packager.proton && packager.umu
+      ? "Downloading the installer from Blizzard. The installer window opens when that's done."
+      : packager.proton
+        ? "Downloading the installer from Blizzard. First runs also fetch the runtime; the installer window opens when that's done."
+        : "Downloading the installer from Blizzard. First runs also fetch Proton and its runtime (about 1 GB); the installer window opens when that's done.";
     showLog(true);
     try { await invoke("install"); } catch (e) { $("#setup-status").textContent = String(e); showLog(false); return; }
     const started = Date.now();
@@ -727,7 +748,7 @@ async function init() {
   // One navigation only: two loads racing before the session cookie exists leave the page with a
   // CSRF token that does not match the stored session, and the first login attempt fails.
   if (st.installed && !acct.linked) startLogin(); else { showSite(FORUM); checkLink("start"); }
-  if (version) checkUpdate(version);
+  if (version && !packager.noUpdateCheck) checkUpdate(version);
   checkBattlenet();
   if (acct.linked) sendHeld().then(showHeldElsewhere);
   else invoke("waiting_reports").then((n) => { if (n) status(n === 1 ? "1 report is waiting for you to log in." : `${n} reports are waiting for you to log in.`); }).catch(() => {}).then(showHeldElsewhere);

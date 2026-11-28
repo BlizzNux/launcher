@@ -1155,7 +1155,9 @@ impl BuildError {
 
 /// The Labs settings that are on, as the keys the site knows them by (sorted).
 fn labs_in(config: &BTreeMap<String, String>) -> Vec<String> {
-    labs_from(config, std::env::var("BLIZZNUX_PROTON").ok().as_deref(), std::env::var("PROTON_USE_WOW64").ok().as_deref())
+    let mut eff = config.clone();
+    crate::apply_packager_labs(&mut eff, |k| std::env::var(k).ok());
+    labs_from(&eff, std::env::var("BLIZZNUX_PROTON").ok().as_deref(), std::env::var("PROTON_USE_WOW64").ok().as_deref())
 }
 
 /// `env_wow64` is PROTON_USE_WOW64 from the environment: set to 1 by hand it is the wow64 Labs
@@ -2687,12 +2689,12 @@ mod tests {
     fn the_lab_field_is_there_only_when_a_lab_setting_is_on() {
         let mut config = BTreeMap::new();
         let mut body = serde_json::json!({ "schema": 1 });
-        mark_lab(&mut body, &labs_in(&config));
+        mark_lab(&mut body, &labs_from(&config, None, None));
         assert_eq!(body, serde_json::json!({ "schema": 1 }));
         config.insert("LAB_WOW64".to_string(), "0".to_string());
-        assert!(labs_in(&config).is_empty());
+        assert!(labs_from(&config, None, None).is_empty());
         config.insert("LAB_WOW64".to_string(), "1".to_string());
-        mark_lab(&mut body, &labs_in(&config));
+        mark_lab(&mut body, &labs_from(&config, None, None));
         assert_eq!(body["lab"], serde_json::json!(["wow64"]));
     }
 

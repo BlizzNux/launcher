@@ -89,14 +89,26 @@ keep_log() {
 }
 
 load_config() {
-	[[ -f $CONFIG ]] || return 0
-	local k v
-	while IFS='=' read -r k v; do
-		case $k in PREFIX|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON|LAB_BNET_FPS) printf -v "$k" '%s' "$v" ;; esac
-	done < "$CONFIG"
+	local k v name
+	if [[ -f $CONFIG ]]; then
+		while IFS='=' read -r k v; do
+			case $k in PREFIX|OFFLOAD|LAB_WOW64|LAB_PROTON_DIR|LAB_DIRECT_PROTON|LAB_BNET_FPS) printf -v "$k" '%s' "$v" ;; esac
+		done < "$CONFIG"
+	fi
+	# A packager locks a Labs setting from the environment (BLIZZNUX_LAB_WOW64, BLIZZNUX_LAB_DIRECT_PROTON,
+	# BLIZZNUX_LAB_BNET_FPS): "1" is on, anything else off, and it wins over the config file.
+	for k in LAB_WOW64 LAB_DIRECT_PROTON LAB_BNET_FPS; do
+		name=BLIZZNUX_$k
+		if [[ -n ${!name:-} ]]; then
+			printf -v "USER_$k" '%s' "${!k}"   # what save_config writes: the user's own value
+			if [[ ${!name} == 1 ]]; then printf -v "$k" '%s' 1; else printf -v "$k" '%s' 0; fi
+		fi
+	done
 }
 
 save_config() {
+	# A Labs setting locked by BLIZZNUX_LAB_* is saved as the user had it.
+	local LAB_WOW64=${USER_LAB_WOW64-$LAB_WOW64} LAB_DIRECT_PROTON=${USER_LAB_DIRECT_PROTON-$LAB_DIRECT_PROTON} LAB_BNET_FPS=${USER_LAB_BNET_FPS-$LAB_BNET_FPS}
 	mkdir -p "$CONFIG_DIR"
 	# The desktop app keeps its own keys (account, report settings) in the same file: carry them over.
 	# A Proton build chosen with an earlier version is dropped: the launcher's own is the only one now.
